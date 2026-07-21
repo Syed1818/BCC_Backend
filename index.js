@@ -17,10 +17,9 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 // 2. Database Connection setup
 // 2. Database Connection setup
 const pool = new Pool({
-    // Paste your full Render PostgreSQL URL inside the quotes below
-    connectionString: 'postgresql://bcc_platform_user:Dc3muQyDWF53xIUWEi0hwhUUBxIQNwzo@dpg-d9foq9ernols73cej4pg-a.singapore-postgres.render.com/bcc_platform', 
+    connectionString: process.env.DATABASE_URL, 
     ssl: {
-        rejectUnauthorized: false // This is required for Render databases
+        rejectUnauthorized: false
     }
 });
 
