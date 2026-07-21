@@ -15,12 +15,13 @@ app.use(express.json({ limit: '10mb' })); // Allows large profile photos
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // 2. Database Connection setup
+// 2. Database Connection setup
 const pool = new Pool({
-    user: 'postgres',
-    host: 'localhost',
-    database: 'bcc_platform',
-    password: 'Karthiktej@1985', 
-    port: 5432,
+    // Paste your full Render PostgreSQL URL inside the quotes below
+    connectionString: 'postgresql://bcc_platform_user:Dc3muQyDWF53xIUWEi0hwhUUBxIQNwzo@dpg-d9foq9ernols73cej4pg-a.singapore-postgres.render.com/bcc_platform', 
+    ssl: {
+        rejectUnauthorized: false // This is required for Render databases
+    }
 });
 
 // Test DB Connection on startup
