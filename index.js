@@ -782,7 +782,59 @@ app.put('/api/employer/applications/:appId/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
+// ==========================================
+// VENUE BUILDER: MISSING EDIT/DELETE APIS
+// ==========================================
 
+// 1. Edit a Block (Building/Hall)
+app.put('/api/admin/blocks/:blockId', async (req, res) => {
+    const { blockId } = req.params;
+    const { kind, name, code } = req.body;
+    try {
+        await pool.query(
+            "UPDATE venue_blocks SET type = $1, name = $2, code = $3 WHERE id = $4",
+            [kind, name, code, blockId]
+        );
+        res.json({ success: true, message: "Block updated" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+// 2. Edit a Room (Section)
+app.put('/api/admin/rooms/:roomId', async (req, res) => {
+    const { roomId } = req.params;
+    const { name, code } = req.body;
+    try {
+        await pool.query(
+            "UPDATE venue_rooms SET name = $1, code = $2 WHERE id = $3",
+            [name, code, roomId]
+        );
+        res.json({ success: true, message: "Room updated" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+// 3. Delete a Room (Section)
+app.delete('/api/admin/rooms/:roomId', async (req, res) => {
+    try {
+        // This will fail if there are stalls inside unless you set ON DELETE CASCADE in SQL, 
+        // so we manually delete stalls in the room first to be safe.
+        await pool.query("DELETE FROM venue_stalls WHERE room_id = $1", [req.params.roomId]);
+        await pool.query("DELETE FROM venue_rooms WHERE id = $1", [req.params.roomId]);
+        res.json({ success: true, message: "Room deleted" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+// 4. Edit a single Stall Code
+app.put('/api/admin/stalls/:stallId', async (req, res) => {
+    const { stallId } = req.params;
+    const { code } = req.body;
+    try {
+        await pool.query(
+            "UPDATE venue_stalls SET code = $1 WHERE id = $2",
+            [code, stallId]
+        );
+        res.json({ success: true, message: "Stall code updated" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
 // =====================================================================
 // SPRINT 17: MESSAGING & INTERVIEW SCHEDULING
 // =====================================================================
