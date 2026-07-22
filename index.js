@@ -1012,6 +1012,62 @@ app.post('/api/employer/feedback', async (req, res) => {
     }
 });
 
+// =====================================================================
+// SPRINT 20: ADMIN JOB APPROVAL APIS (MATCHES admin.jobs.tsx)
+// =====================================================================
+
+// 1. GET ALL JOBS FOR ADMIN REVIEW
+app.get('/api/admin/jobs', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                id,
+                title,
+                company_name AS company,
+                job_type AS type,
+                location,
+                status AS "approvalStatus",
+                created_at AS "postedAt"
+            FROM jobs
+            ORDER BY created_at DESC
+        `);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("Admin Fetch Jobs Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching jobs for admin." });
+    }
+});
+
+// 2. APPROVE OR REJECT A JOB
+app.put('/api/admin/jobs/:jobId/review', async (req, res) => {
+    const { jobId } = req.params;
+    const { status } = req.body; // Expects 'approved' or 'rejected'
+
+    if (!['approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ success: false, message: "Invalid status provided." });
+    }
+
+    try {
+        const result = await pool.query(
+            "UPDATE jobs SET status = $1 WHERE id = $2 RETURNING *",
+            [status, jobId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Job listing not found." });
+        }
+
+        res.json({ 
+            success: true, 
+            message: `Job has been successfully ${status}.`,
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("Admin Job Review Error:", error);
+        res.status(500).json({ success: false, message: "Server error reviewing job." });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
 });
