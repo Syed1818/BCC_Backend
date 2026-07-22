@@ -106,6 +106,19 @@ app.put('/api/admin/events/:id/hold', async (req, res) => {
         res.json({ success: true, message: 'Event status updated' });
     } catch (error) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
+// PUT: Make an event live
+app.put('/api/admin/events/:id/live', async (req, res) => {
+    try {
+        await pool.query(
+            "UPDATE events SET status = 'live' WHERE id = $1", 
+            [req.params.id]
+        );
+        res.json({ success: true, message: "Event is now live!" });
+    } catch (error) { 
+        console.error("Make Live Error:", error);
+        res.status(500).json({ success: false, message: "Failed to update status." }); 
+    }
+});
 
 app.delete('/api/admin/events/:id', async (req, res) => {
     const { id } = req.params;
