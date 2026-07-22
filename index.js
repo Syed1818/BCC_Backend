@@ -1132,7 +1132,71 @@ app.put('/api/admin/jobs/:jobId/review', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error reviewing job." });
     }
 });
+// =====================================================================
+// SPRINT 21: ADMIN EMPLOYER MANAGEMENT APIS
+// =====================================================================
 
+// 1. GET ALL EMPLOYERS WITH ACTIVE JOBS COUNT & AVERAGE RATING
+app.get('/api/admin/employers', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                e.id, 
+                e.company_name AS name, 
+                COALESCE(e.gst_cin, 'Pending') AS gst_status,
+                e.status,
+                COALESCE(AVG(ef.overall_rating), 4.0)::numeric(2,1) AS rating,
+                (SELECT COUNT(*) FROM jobs j WHERE j.employer_id = e.id AND j.status = 'approved') AS jobs
+            FROM employers e
+            LEFT JOIN employer_feedback ef ON e.id = ef.employer_id
+            GROUP BY e.id
+            ORDER BY e.created_at DESC;
+        `;
+        const result = await pool.query(query);
+
+        const formattedData = result.rows.map(e => ({
+            id: `EMP-${String(e.id).padStart(3, '0')}`,
+            dbId: e.id,
+            name: e.name,
+            gst: e.gst_status !== 'Pending' ? 'Verified' : 'Pending',
+            jobs: parseInt(e.jobs) || 0,
+            rating: parseFloat(e.rating),
+            status: e.status === 'approved' ? 'Active' : e.status === 'blacklisted' ? 'Blacklisted' : 'Pending'
+        }));
+
+        res.json({ success: true, data: formattedData });
+    } catch (error) {
+        console.error("Fetch Admin Employers Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching employers." });
+    }
+});
+
+// 2. UPDATE EMPLOYER STATUS (Approve, Reject, or Blacklist)
+app.put('/api/admin/employers/:id/status', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body; // Expects 'approved', 'rejected', or 'blacklisted'
+
+    if (!['approved', 'rejected', 'blacklisted'].includes(status)) {
+        return res.status(400).json({ success: false, message: "Invalid status provided." });
+    }
+
+    try {
+        const result = await pool.query(
+            "UPDATE employers SET status = $1 WHERE id = $2 RETURNING *",
+            [status, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        res.json({ success: true, message: `Employer status updated to ${status}.` });
+    } catch (error) {
+        console.error("Update Employer Status Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating employer status." });
+    }
+});
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
 });
+
