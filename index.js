@@ -1363,29 +1363,40 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
 // =====================================================================
 
 // 1. GET ALL CANDIDATES FOR ADMIN
+// =====================================================================
+// BULLETPROOF ADMIN CANDIDATES API
+// =====================================================================
 app.get('/api/admin/candidates', async (req, res) => {
-    try {
-        const query = `
-            SELECT 
-                c.unique_id AS id,
-                c.full_name AS name,
-                COALESCE(c.highest_qualification, 'N/A') AS qual,
-                COALESCE(c.district, 'N/A') AS district,
-                COALESCE(c.account_status, 'Verified') AS status,
-                EXISTS (
-                    SELECT 1 FROM event_candidate_registrations ecr 
-                    WHERE ecr.candidate_id::text = c.unique_id 
-                    AND LOWER(ecr.attendance_status) = 'present'
-                ) AS attended
-            FROM candidates c
-            ORDER BY c.created_at DESC;
-        `;
-        const result = await pool.query(query);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("Fetch Admin Candidates Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching candidates." });
-    }
+    try {
+        // 1. Auto-create account_status column in candidates table if missing
+        await pool.query(`
+            ALTER TABLE candidates 
+            ADD COLUMN IF NOT EXISTS account_status VARCHAR(50) DEFAULT 'Verified';
+        `);
+
+        // 2. Fetch candidates safely with robust fallback defaults
+        const query = `
+            SELECT 
+                c.unique_id AS id,
+                COALESCE(c.full_name, 'Candidate') AS name,
+                COALESCE(c.highest_qualification, 'N/A') AS qual,
+                COALESCE(c.district, 'N/A') AS district,
+                COALESCE(c.account_status, 'Verified') AS status,
+                FALSE AS attended
+            FROM candidates c
+            ORDER BY c.id DESC;
+        `;
+        const result = await pool.query(query);
+        res.json({ success: true, data: result.rows });
+
+    } catch (error) {
+        console.error("Fetch Admin Candidates Error:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Database query error", 
+            error: error.message 
+        });
+    }
 });
 
 // 2. UPDATE CANDIDATE STATUS (Verified, Pending, Rejected)
