@@ -405,28 +405,6 @@ app.put('/api/candidate/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-app.get('/api/candidate/:id/jobs', async (req, res) => {
-    try {
-        const candidateRes = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candidateRes.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found" });
-        const candidate = candidateRes.rows[0];
-        const jobsRes = await pool.query("SELECT * FROM jobs WHERE status = 'approved'");
-        const matchedJobs = jobsRes.rows.map(job => {
-            let score = 0;
-            const jobSkills = job.skills_required || [];
-            const candidateSkills = candidate.skills || [];
-            if (jobSkills.length > 0) {
-                const matchedSkills = jobSkills.filter(js => candidateSkills.some(cs => cs.toLowerCase() === js.toLowerCase()));
-                score += (matchedSkills.length / jobSkills.length) * 50;
-            } else { score += 50; }
-            if (job.location.toLowerCase() === (candidate.district || "").toLowerCase() || (candidate.preferred_locations || []).some(loc => loc.toLowerCase() === job.location.toLowerCase()) || candidate.willing_to_relocate) score += 20;
-            if (!job.qualification_required || job.qualification_required === candidate.highest_qualification || candidate.highest_qualification === "PG Degree" || candidate.highest_qualification === "BE/B-Tech") score += 15;
-            if ((candidate.preferred_roles || []).some(role => job.title.toLowerCase().includes(role.toLowerCase()))) score += 15;
-            return { id: job.id, company: job.company_name, title: job.title, type: job.job_type, location: job.location, qualification: job.qualification_required, experience: job.experience_required, salary: job.salary_range, skills: jobSkills, matchScore: Math.round(score) };
-        }).sort((a, b) => b.matchScore - a.matchScore);
-        res.json({ success: true, data: matchedJobs });
-    } catch (error) { res.status(500).json({ success: false, message: "Server error" }); }
-});
 
 app.post('/api/applications/apply', async (req, res) => {
     try {
