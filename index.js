@@ -1358,10 +1358,58 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile" });
     }
 });
-// ALWAYS KEEP APP.LISTEN AT THE VERY BOTTOM
-app.listen(PORT, () => {
-    console.log(`Backend server is running on http://localhost:${PORT}`);
+// =====================================================================
+// SPRINT 24: ADMIN CANDIDATE MANAGEMENT APIS
+// =====================================================================
+
+// 1. GET ALL CANDIDATES FOR ADMIN
+app.get('/api/admin/candidates', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                c.unique_id AS id,
+                c.full_name AS name,
+                COALESCE(c.highest_qualification, 'N/A') AS qual,
+                COALESCE(c.district, 'N/A') AS district,
+                COALESCE(c.account_status, 'Verified') AS status,
+                EXISTS (
+                    SELECT 1 FROM event_candidate_registrations ecr 
+                    WHERE ecr.candidate_id::text = c.unique_id 
+                    AND LOWER(ecr.attendance_status) = 'present'
+                ) AS attended
+            FROM candidates c
+            ORDER BY c.created_at DESC;
+        `;
+        const result = await pool.query(query);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("Fetch Admin Candidates Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching candidates." });
+    }
 });
+
+// 2. UPDATE CANDIDATE STATUS (Verified, Pending, Rejected)
+app.put('/api/admin/candidates/:id/status', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    try {
+        const result = await pool.query(
+            "UPDATE candidates SET account_status = $1 WHERE unique_id = $2 RETURNING *",
+            [status, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Candidate not found." });
+        }
+
+        res.json({ success: true, message: `Candidate status updated to ${status}.` });
+    } catch (error) {
+        console.error("Update Candidate Status Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating candidate status." });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
 });
