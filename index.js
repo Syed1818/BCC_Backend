@@ -1196,6 +1196,66 @@ app.put('/api/admin/employers/:id/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating employer status." });
     }
 });
+// =====================================================================
+// SPRINT 22: ADMIN COMPANY REQUESTS APIS (MATCHES admin.company-requests.tsx)
+// =====================================================================
+
+// 1. GET ALL COMPANY REGISTRATION REQUESTS
+app.get('/api/admin/company-requests', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                id,
+                company_name AS "companyName",
+                email,
+                hr_name AS "hrName",
+                hr_phone AS "hrPhone",
+                industry,
+                hq_city AS location,
+                website,
+                gst_cin AS "gstCin",
+                status,
+                created_at AS "requestedAt"
+            FROM employers
+            ORDER BY created_at DESC;
+        `;
+        const result = await pool.query(query);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("Fetch Company Requests Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching company requests." });
+    }
+});
+
+// 2. APPROVE OR REJECT A COMPANY REGISTRATION REQUEST
+app.put('/api/admin/company-requests/:id/review', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body; // Expects 'approved' or 'rejected'
+
+    if (!['approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ success: false, message: "Invalid status provided." });
+    }
+
+    try {
+        const result = await pool.query(
+            "UPDATE employers SET status = $1 WHERE id = $2 RETURNING *",
+            [status, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Company request not found." });
+        }
+
+        res.json({ 
+            success: true, 
+            message: `Company registration request ${status}.`,
+            data: result.rows[0]
+        });
+    } catch (error) {
+        console.error("Review Company Request Error:", error);
+        res.status(500).json({ success: false, message: "Server error reviewing company request." });
+    }
+});
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
 });
