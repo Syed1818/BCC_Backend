@@ -1201,21 +1201,26 @@ app.put('/api/admin/employers/:id/status', async (req, res) => {
 // =====================================================================
 
 // 1. GET ALL COMPANY REGISTRATION REQUESTS
+
+// GET ALL COMPANY REGISTRATION REQUESTS FOR ADMIN
 app.get('/api/admin/company-requests', async (req, res) => {
     try {
         const query = `
             SELECT 
                 id,
-                company_name AS "companyName",
-                email,
+                company_name AS name,
+                email_domain AS domain,
+                COALESCE(gst_cin, 'N/A') AS gst,
                 hr_name AS "hrName",
+                email AS "hrEmail",
                 hr_phone AS "hrPhone",
                 industry,
-                hq_city AS location,
+                company_size AS size,
                 website,
-                gst_cin AS "gstCin",
+                hq_city AS city,
+                about_company AS about,
                 status,
-                created_at AS "requestedAt"
+                created_at AS "createdAt"
             FROM employers
             ORDER BY created_at DESC;
         `;
@@ -1226,7 +1231,6 @@ app.get('/api/admin/company-requests', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching company requests." });
     }
 });
-
 // 2. APPROVE OR REJECT A COMPANY REGISTRATION REQUEST
 app.put('/api/admin/company-requests/:id/review', async (req, res) => {
     const { id } = req.params;
