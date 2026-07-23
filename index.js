@@ -1260,6 +1260,30 @@ app.put('/api/admin/company-requests/:id/review', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error reviewing company request." });
     }
 });
+// =====================================================================
+// SPRINT 23: EMPLOYER PROFILE & METRICS
+// =====================================================================
+
+// GET LIVE CANDIDATES REVIEWED COUNT
+app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
+    try {
+        const { employerId } = req.params;
+        const result = await pool.query(
+            "SELECT COUNT(*) FROM job_applications WHERE employer_id = $1",
+            [employerId]
+        );
+        const count = parseInt(result.rows[0].count) || 0;
+        res.json({ success: true, count });
+    } catch (error) {
+        console.error("Fetch Candidates Count Error:", error);
+        res.status(500).json({ success: false, count: 0 });
+    }
+});
+
+// ALWAYS KEEP APP.LISTEN AT THE VERY BOTTOM
+app.listen(PORT, () => {
+    console.log(`Backend server is running on http://localhost:${PORT}`);
+});
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
 });
