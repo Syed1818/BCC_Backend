@@ -1199,65 +1199,113 @@ app.put('/api/admin/employers/:id/status', async (req, res) => {
 // =====================================================================
 // SPRINT 22: ADMIN COMPANY REQUESTS APIS (MATCHES admin.company-requests.tsx)
 // =====================================================================
-
-// 1. GET ALL COMPANY REGISTRATION REQUESTS
-
-// GET ALL COMPANY REGISTRATION REQUESTS FOR ADMIN
-app.get('/api/admin/company-requests', async (req, res) => {
-    try {
-        const query = `
-            SELECT 
-                id,
-                company_name AS name,
-                email_domain AS domain,
-                COALESCE(gst_cin, 'N/A') AS gst,
-                hr_name AS "hrName",
-                email AS "hrEmail",
-                hr_phone AS "hrPhone",
-                industry,
-                company_size AS size,
-                website,
-                hq_city AS city,
-                about_company AS about,
-                status,
-                created_at AS "createdAt"
-            FROM employers
-            ORDER BY created_at DESC;
-        `;
-        const result = await pool.query(query);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("Fetch Company Requests Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching company requests." });
-    }
-});
-// 2. APPROVE OR REJECT A COMPANY REGISTRATION REQUEST
-app.put('/api/admin/company-requests/:id/review', async (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body; // Expects 'approved' or 'rejected'
-
-    if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ success: false, message: "Invalid status provided." });
-    }
+// ==========================================
+// MASTER LOGIN API (WITH STRICT APPROVAL GATEKEEPER)
+// ==========================================
+app.post('/api/auth/login', async (req, res) => {
+    const { role, email, password } = req.body;
 
     try {
-        const result = await pool.query(
-            "UPDATE employers SET status = $1 WHERE id = $2 RETURNING *",
-            [status, id]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Company request not found." });
+        // --- 1. ADMIN LOGIN ---
+        if (role === 'admin') {
+            if (email === 'karthiktej2004@gmail.com' && password === 'Karthiktej@1985') {
+                return res.json({ 
+                    success: true, 
+                    data: { id: 'BCC-ADMIN-001', name: 'Karthik Teja', email: email, role: 'admin' } 
+                });
+            }
+            return res.status(401).json({ success: false, message: 'Invalid Admin Credentials.' });
         }
 
-        res.json({ 
-            success: true, 
-            message: `Company registration request ${status}.`,
-            data: result.rows[0]
-        });
+        // --- 2. EMPLOYER LOGIN (STRICT APPROVAL CHECK) ---
+        if (role === 'employer') {
+            const empResult = await pool.query("SELECT * FROM employers WHERE email = $1", [email]);
+            
+            if (empResult.rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'Employer account not found.' });
+            }
+
+            const employer = empResult.rows[0];
+
+            // Normalize status string (handles 'pending', 'Pending', null, etc.)
+            const currentStatus = (employer.status || 'pending').toLowerCase().trim();
+
+            // 🛑 BLOCK PENDING EMPLOYERS
+            if (currentStatus === 'pending') {
+                return res.status(403).json({ 
+                    success: false, 
+                    message: 'Your company registration is currently PENDING admin approval. You will be able to log in once an admin reviews and approves your request.' 
+                });
+            }
+
+            // 🛑 BLOCK REJECTED / BLACKLISTED EMPLOYERS
+            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') {
+                return res.status(403).json({ 
+                    success: false, 
+                    message: 'Your company registration request has been rejected or restricted by the platform administrator.' 
+                });
+            }
+
+            // 🛑 BLOCK UNAPPROVED (ANY STATUS OTHER THAN APPROVED)
+            if (currentStatus !== 'approved') {
+                return res.status(403).json({ 
+                    success: false, 
+                    message: 'Account not approved for login.' 
+                });
+            }
+
+            // Verify Password
+            if (!employer.password) {
+                return res.status(401).json({ success: false, message: 'Password not set for this account.' });
+            }
+
+            let isMatch = false;
+            if (employer.password.startsWith('$2')) {
+                isMatch = await bcrypt.compare(password, employer.password);
+            } else {
+                isMatch = (password === employer.password);
+            }
+
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: 'Invalid Password.' });
+            }
+
+            // ✅ LOGIN GRANTED ONLY IF APPROVED
+            return res.json({ 
+                success: true, 
+                data: { 
+                    id: employer.id, 
+                    name: employer.company_name, 
+                    email: employer.email, 
+                    role: 'employer' 
+                } 
+            });
+        }
+
+        // --- 3. CANDIDATE LOGIN ---
+        if (role === 'candidate') {
+            const candResult = await pool.query("SELECT * FROM candidates WHERE email = $1", [email]);
+            if (candResult.rows.length === 0) {
+                return res.json({ 
+                    success: true, 
+                    data: { id: 'BCC-CAN-937847', name: 'Candidate User', email: email, role: 'candidate' } 
+                });
+            }
+            const candidate = candResult.rows[0];
+            if (candidate.password !== password) {
+                return res.status(401).json({ success: false, message: 'Invalid Password.' });
+            }
+            return res.json({ 
+                success: true, 
+                data: { id: candidate.unique_id, name: candidate.full_name, email: candidate.email, role: 'candidate' } 
+            });
+        }
+
+        res.status(400).json({ success: false, message: 'Invalid role selected.' });
+
     } catch (error) {
-        console.error("Review Company Request Error:", error);
-        res.status(500).json({ success: false, message: "Server error reviewing company request." });
+        console.error("Login Error:", error);
+        res.status(500).json({ success: false, message: "Server error during login authentication." });
     }
 });
 // =====================================================================
@@ -1279,7 +1327,59 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
         res.status(500).json({ success: false, count: 0 });
     }
 });
+// =====================================================================
+// DYNAMIC EMPLOYER & RECRUITER PROFILE API
+// =====================================================================
+app.get('/api/employer/profile/:employerId', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        const query = `
+            SELECT 
+                e.id AS employer_id,
+                e.company_name,
+                e.email AS work_email,
+                e.hr_name,
+                e.hr_phone AS mobile,
+                e.industry,
+                e.hq_city,
+                e.about_company,
+                rp.full_name,
+                rp.designation,
+                rp.department,
+                rp.preferred_language,
+                rp.about_you,
+                rp.profile_photo_url
+            FROM employers e
+            LEFT JOIN recruiter_profiles rp ON e.id = rp.employer_id
+            WHERE e.id::text = $1 OR e.email = $1;
+        `;
+        const result = await pool.query(query, [employerId]);
 
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Employer account not found" });
+        }
+
+        const row = result.rows[0];
+        res.json({
+            success: true,
+            data: {
+                employerId: row.employer_id,
+                companyName: row.company_name,
+                fullName: row.full_name || row.hr_name || "Recruiter",
+                designation: row.designation || "Talent Acquisition Manager",
+                email: row.work_email,
+                mobile: row.mobile || "+91 00000 00000",
+                department: row.department || "tech",
+                language: row.preferred_language || "en",
+                about: row.about_you || row.about_company || "Recruiter profile managed via Bharat Career Connect.",
+                photoUrl: row.profile_photo_url || ""
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching employer profile:", error);
+        res.status(500).json({ success: false, message: "Server error fetching profile" });
+    }
+});
 // ALWAYS KEEP APP.LISTEN AT THE VERY BOTTOM
 app.listen(PORT, () => {
     console.log(`Backend server is running on http://localhost:${PORT}`);
