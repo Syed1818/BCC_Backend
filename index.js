@@ -30,11 +30,13 @@ pool.connect((err) => {
 // ==========================================
 // 3. AUTHENTICATION (LOGIN & REGISTRATION)
 // ==========================================
+
+// --- LOGIN ENDPOINT ---
 app.post('/api/auth/login', async (req, res) => {
-    const { role, email, password } = req.body;
+    const { role, email, phone, identifier, company_name, password } = req.body;
 
     try {
-        // --- 1. ADMIN LOGIN (Database Driven) ---
+        // --- 1. ADMIN LOGIN (Untouched & Safe) ---
         if (role === 'admin') {
             const adminResult = await pool.query("SELECT * FROM admins WHERE email = $1", [email]);
             
@@ -66,35 +68,79 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-        // --- 2. EMPLOYER LOGIN (Database Driven) ---
+        // --- 2. EMPLOYER LOGIN (Strict Company Name + Email + Password) ---
         if (role === 'employer') {
-            const empResult = await pool.query("SELECT * FROM employers WHERE email = $1", [email]);
-            if (empResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Employer account not found.' });
+            if (!company_name || !email) {
+                return res.status(400).json({ success: false, message: 'Company Name and Email are required.' });
+            }
 
-            const employer = empResult.rows[0];
+            // Step A: Check if Email exists
+            const emailCheck = await pool.query("SELECT * FROM employers WHERE LOWER(email) = LOWER($1)", [email.trim()]);
+            if (emailCheck.rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'Company email is not registered.' });
+            }
+
+            const employer = emailCheck.rows[0];
+
+            // Step B: Check if Company Name matches
+            if (!employer.company_name || employer.company_name.trim().toLowerCase() !== company_name.trim().toLowerCase()) {
+                return res.status(401).json({ success: false, message: 'Company name does not match our records for this email.' });
+            }
+
+            // Step C: Check Account Status
             const currentStatus = (employer.status || 'pending').toLowerCase().trim();
+            if (currentStatus === 'pending') {
+                return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
+            }
+            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') {
+                return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
+            }
+            if (currentStatus !== 'approved') {
+                return res.status(403).json({ success: false, message: 'Account not approved for login.' });
+            }
 
-            if (currentStatus === 'pending') return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
-            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
-            if (currentStatus !== 'approved') return res.status(403).json({ success: false, message: 'Account not approved for login.' });
-            if (!employer.password) return res.status(401).json({ success: false, message: 'Password not set for this account.' });
+            const empPassword = employer.password_hash || employer.password;
+            if (!empPassword) {
+                return res.status(401).json({ success: false, message: 'Password not set for this account.' });
+            }
 
-            let isMatch = employer.password.startsWith('$2') ? await bcrypt.compare(password, employer.password) : (password === employer.password);
-            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
+            // Step D: Verify Password
+            let isMatch = empPassword.startsWith('$2') ? await bcrypt.compare(password, empPassword) : (password === empPassword);
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: 'Incorrect password.' });
+            }
 
-            return res.json({ success: true, data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } });
+            return res.json({ 
+                success: true, 
+                data: { 
+                    id: employer.id, 
+                    name: employer.company_name, 
+                    email: employer.email, 
+                    role: 'employer' 
+                } 
+            });
         }
 
-        // --- 3. CANDIDATE LOGIN (Database Driven) ---
+        // --- 3. CANDIDATE LOGIN (Email OR Mobile Number + Password) ---
         if (role === 'candidate') {
-            const candResult = await pool.query("SELECT * FROM candidates WHERE email = $1", [email]);
-            
-            if (candResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Candidate account not found.' });
+            const loginInput = (email || identifier || phone || '').trim();
+
+            if (!loginInput) {
+                return res.status(400).json({ success: false, message: 'Please enter your registered Email or Mobile Number.' });
             }
-            
+
+            // Check against both email and phone columns
+            const candResult = await pool.query(
+                "SELECT * FROM candidates WHERE LOWER(email) = LOWER($1) OR phone = $1", 
+                [loginInput]
+            );
+
+            if (candResult.rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'This Email or Mobile Number is not registered.' });
+            }
+
             const candidate = candResult.rows[0];
-            
+
             let isMatch = false;
             if (candidate.password && candidate.password.startsWith('$2')) {
                 isMatch = await bcrypt.compare(password, candidate.password);
@@ -102,11 +148,22 @@ app.post('/api/auth/login', async (req, res) => {
                 isMatch = (password === candidate.password);
             }
 
-            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
-            
-            return res.json({ success: true, data: { id: candidate.unique_id, name: candidate.full_name, email: candidate.email, role: 'candidate' } });
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: 'Incorrect password.' });
+            }
+
+            return res.json({ 
+                success: true, 
+                data: { 
+                    id: candidate.unique_id, 
+                    name: candidate.full_name, 
+                    email: candidate.email, 
+                    phone: candidate.phone,
+                    role: 'candidate' 
+                } 
+            });
         }
-        
+
         res.status(400).json({ success: false, message: 'Invalid role selected.' });
     } catch (error) { 
         console.error("Login Error:", error);
@@ -114,6 +171,88 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// --- FORGOT PASSWORD (REQUEST OTP) ---
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const { role, identifier } = req.body; // identifier can be email or phone
+
+    if (!identifier) {
+        return res.status(400).json({ success: false, message: "Please provide your registered Email or Mobile Number." });
+    }
+
+    try {
+        let userFound = false;
+
+        if (role === 'candidate') {
+            const result = await pool.query(
+                "SELECT * FROM candidates WHERE LOWER(email) = LOWER($1) OR phone = $1", 
+                [identifier.trim()]
+            );
+            userFound = result.rows.length > 0;
+        } else if (role === 'employer') {
+            const result = await pool.query(
+                "SELECT * FROM employers WHERE LOWER(email) = LOWER($1)", 
+                [identifier.trim()]
+            );
+            userFound = result.rows.length > 0;
+        }
+
+        if (!userFound) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "This Email or Mobile Number is not registered in our system." 
+            });
+        }
+
+        // Return success (OTP is hardcoded as 123456 for now)
+        return res.json({ 
+            success: true, 
+            message: "OTP sent successfully to your registered Email/Mobile. Use test OTP: 123456" 
+        });
+    } catch (error) {
+        console.error("Forgot Password Error:", error);
+        return res.status(500).json({ success: false, message: "Server error checking user account." });
+    }
+});
+
+// --- RESET PASSWORD (VERIFY OTP & SAVE NEW PASSWORD) ---
+app.post('/api/auth/reset-password', async (req, res) => {
+    const { role, identifier, otp, newPassword } = req.body;
+
+    if (otp !== '123456') {
+        return res.status(400).json({ success: false, message: "Invalid OTP entered. Please try again." });
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+        return res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+    }
+
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash(newPassword, salt);
+
+        if (role === 'candidate') {
+            await pool.query(
+                "UPDATE candidates SET password = $1 WHERE LOWER(email) = LOWER($2) OR phone = $2",
+                [passwordHash, identifier.trim()]
+            );
+        } else if (role === 'employer') {
+            await pool.query(
+                "UPDATE employers SET password = $1, password_hash = $1 WHERE LOWER(email) = LOWER($2)",
+                [passwordHash, identifier.trim()]
+            );
+        }
+
+        return res.json({ 
+            success: true, 
+            message: "Password reset successfully! You can now log in with your new password." 
+        });
+    } catch (error) {
+        console.error("Reset Password Error:", error);
+        return res.status(500).json({ success: false, message: "Server error resetting password." });
+    }
+});
+
+// --- REGISTRATION ENDPOINTS ---
 app.post('/api/auth/employer/register', async (req, res) => {
     const { company_name, email_domain, gst_cin, industry, sector, company_size, website, hq_city, about_company, hr_name, hr_phone, email, password } = req.body;
     try {
@@ -161,7 +300,7 @@ app.post('/api/auth/candidate/register', async (req, res) => {
         const result = await pool.query(insertQuery, values);
         res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
     } catch (error) { res.status(500).json({ success: false, message: "Server error during registration." }); }
-});
+});;
 
 // ==========================================
 // 4. ADMIN DASHBOARD & APPROVAL APIS
