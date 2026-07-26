@@ -846,7 +846,6 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
 app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
     const { employerId } = req.params;
     try {
-        // Counts how many applications belong specifically to this employer ID
         const countRes = await pool.query(
             "SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1", 
             [employerId]
