@@ -952,6 +952,26 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
+// --- GET EMPLOYER EVENT STALL APPLICATIONS ---
+app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        const result = await pool.query(
+            "SELECT id, event_id as \"eventId\", status, payment_status as \"paymentStatus\", applied_at as \"appliedAt\" FROM employer_event_stalls WHERE employer_id = $1",
+            [dbEmpId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching employer event stalls:", error);
+        res.status(500).json({ success: false, message: "Server error fetching event stalls." });
+    }
+});
 
 
 // ==========================================
