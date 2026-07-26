@@ -199,16 +199,19 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-     if (role === 'employer') {
-            const cleanInput = rawInput.toLowerCase();
-            const cleanCompany = companyName ? companyName.trim().toLowerCase() : cleanInput;
+if (role === 'employer') {
+            const companyNameInput = req.body.company_name ? req.body.company_name.trim() : "";
 
+            // FEATURE 6: Employer login must match Email AND Company Name together[cite: 2]
             const empResult = await pool.query(
-                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
-                [cleanInput, cleanCompany]
+                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1) AND LOWER(TRIM(company_name)) = LOWER($2)", 
+                [rawInput, companyNameInput]
             );
 
-            if (empResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Employer account not found.' });
+            // FEATURE 6: Distinguish "not registered" from "wrong password"[cite: 2]
+            if (empResult.rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'Employer account not found or Company Name is incorrect.' });
+            }
 
             const employer = empResult.rows[0];
             const currentStatus = (employer.status || 'pending').toLowerCase().trim();
@@ -221,7 +224,7 @@ app.post('/api/auth/login', async (req, res) => {
                 ? await bcrypt.compare(password, employer.password) 
                 : (password === employer.password);
 
-            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
+            if (!isMatch) return res.status(401).json({ success: false, message: 'Incorrect password.' });
 
             return res.json({ success: true, data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } });
         }
