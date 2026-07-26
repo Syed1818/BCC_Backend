@@ -895,10 +895,10 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
             SELECT ja.applied_at as date, COALESCE(c.full_name, 'Candidate') as candidate_name, 
                    j.title as job_title, ja.status as action_type, j.event_id, e.name as event_name
             FROM job_applications ja 
-            LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id = c.id
+            LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id::text = c.id::text
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id
-            WHERE ja.employer_id = $1 
+            WHERE ja.employer_id::text = $1::text 
             ORDER BY ja.applied_at DESC
         `, [dbEmpId]);
 
@@ -923,7 +923,7 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Analytics Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching analytics." });
+        res.status(500).json({ success: false, message: "Server error fetching analytics: " + error.message });
     }
 });
 // --- GET EMPLOYER PROFILE ---
