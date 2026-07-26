@@ -27,8 +27,9 @@ pool.connect((err) => {
     else console.log('Successfully connected to the PostgreSQL database.');
 });
 
-
-
+// ==========================================
+// 3. CANDIDATE REGISTRATION API
+// ==========================================
 app.post('/api/auth/candidate/register', async (req, res) => {
     const data = req.body;
     try {
@@ -37,7 +38,7 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // 2. Strict Email & Phone Format Validation (Feature 7)
+        // 2. Strict Email Format Validation (Feature 7)
         if (data.email) {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(data.email.trim())) {
@@ -135,6 +136,7 @@ app.post('/api/auth/candidate/register', async (req, res) => {
         res.status(500).json({ success: false, message: "Database Error: " + (error.detail || error.message || "Server error during registration.") });
     }
 });
+
 // ==========================================
 // 4. MASTER AUTHENTICATION (LOGIN)
 // ==========================================
