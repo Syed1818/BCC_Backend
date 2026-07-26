@@ -822,7 +822,62 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching analytics." });
     }
 });
+// --- GET EMPLOYER PROFILE ---
+app.get('/api/employer/profile/:employerId', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        const result = await pool.query(
+            "SELECT id, company_name as \"companyName\", hr_name as \"fullName\", designation, email, hr_phone as mobile, department, language, about_company as about, photo_url as \"photoUrl\" FROM employers WHERE id::text = $1 OR email = $1", 
+            [employerId]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Employer profile not found." });
+        }
+        res.json({ success: true, data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Profile Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching profile." });
+    }
+});
 
+// --- GET CANDIDATES REVIEWED COUNT ---
+app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        const countRes = await pool.query(
+            "SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", 
+            [employerId]
+        );
+        const count = parseInt(countRes.rows[0].count) || 0;
+        res.json({ success: true, count });
+    } catch (error) {
+        console.error("❌ Count Fetch Error:", error);
+        res.status(500).json({ success: false, count: 0 });
+    }
+});
+
+// --- UPDATE EMPLOYER PROFILE (INCLUDING PHOTO) ---
+app.put('/api/employer/profile/update', async (req, res) => {
+    const { employerId, fullName, designation, mobile, department, language, about, photoUrl } = req.body;
+    try {
+        await pool.query(`
+            UPDATE employers 
+            SET hr_name = COALESCE($1, hr_name),
+                designation = COALESCE($2, designation),
+                hr_phone = COALESCE($3, hr_phone),
+                department = COALESCE($4, department),
+                language = COALESCE($5, language),
+                about_company = COALESCE($6, about_company),
+                photo_url = COALESCE($7, photo_url)
+            WHERE id::text = $8 OR email = $8
+        `, [fullName, designation, mobile, department, language, about, photoUrl, employerId]);
+
+        res.json({ success: true, message: "Profile updated successfully." });
+    } catch (error) {
+        console.error("❌ Profile Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating profile." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
