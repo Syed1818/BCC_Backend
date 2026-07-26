@@ -347,6 +347,53 @@ app.post('/api/auth/reset-password', async (req, res) => {
         return res.status(500).json({ success: false, message: "Database error updating password." });
     }
 });
+// --- MARK VENUE ATTENDANCE (CANDIDATE & EMPLOYER) ---
+app.post('/api/events/attendance/mark', async (req, res) => {
+    const { eventId, userId, userType, code } = req.body;
+
+    // Validate the mocked verification code
+    if (code !== '1234' && code !== '123456') {
+        return res.status(400).json({ success: false, message: "Invalid verification code." });
+    }
+
+    try {
+        let dbUserId = userId;
+
+        // Resolve the candidate's internal DB ID from their BCC-CAN string
+        if (userType === 'candidate' && (userId.toString().includes('BCC-CAN') || isNaN(userId))) {
+            const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [userId]);
+            if (candLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+            dbUserId = candLookup.rows[0].id;
+        } 
+        // Resolve employer ID if needed
+        else if (userType === 'employer' && isNaN(userId)) {
+             const empLookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [userId]);
+             if (empLookup.rows.length > 0) dbUserId = empLookup.rows[0].id;
+        }
+
+        // 1. Insert the scan record into the attendance history table
+        await pool.query(
+            `INSERT INTO event_attendance (event_id, user_id, user_type, gate, status, created_at) 
+             VALUES ($1, $2, $3, 'Main Gate', 'Checked In', NOW())`,
+            [eventId, dbUserId, userType]
+        );
+
+        // 2. If it is a candidate, update their registration to 'Present' so the UI unlocks the jobs
+        if (userType === 'candidate') {
+            await pool.query(
+                `UPDATE event_candidate_registrations 
+                 SET attendance_status = 'Present' 
+                 WHERE event_id = $1 AND candidate_id = $2`,
+                [eventId, dbUserId]
+            );
+        }
+
+        res.json({ success: true, message: "Attendance verified! Event unlocked." });
+    } catch (error) {
+        console.error("❌ Error marking attendance:", error);
+        res.status(500).json({ success: false, message: "Server error marking attendance." });
+    }
+});
 
 
 // ==========================================
