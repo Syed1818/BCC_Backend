@@ -154,37 +154,45 @@ app.post('/api/auth/candidate/register', async (req, res) => {
 });
 
 // ==========================================
-// 5. MASTER AUTHENTICATION (LOGIN API)
+// MASTER AUTHENTICATION (LOGIN API)
 // ==========================================
 app.post('/api/auth/login', async (req, res) => {
     const { role, email, password } = req.body;
 
     try {
-        const inputIdentifier = email ? email.trim() : "";
-        const cleanPhone = inputIdentifier.replace(/\D/g, "");
+        const rawInput = email ? email.trim() : "";
+        const digitsOnly = rawInput.replace(/\D/g, "");
+        // Extract last 10 digits for flexible mobile lookup
+        const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
         if (role === 'candidate' || !role) {
-            // Allows login via Email, Phone Number, or Unique Candidate ID
+            // Flexible SQL Query: Checks Email, Unique Candidate ID, and Phone (with or without +91)
             const candResult = await pool.query(
                 `SELECT * FROM candidates 
                  WHERE LOWER(email) = LOWER($1) 
-                    OR phone = $1 
-                    OR (phone IS NOT NULL AND $2 != '' AND phone = $2)
-                    OR LOWER(unique_id) = LOWER($1)`,
-                [inputIdentifier, cleanPhone]
+                    OR LOWER(unique_id) = LOWER($1)
+                    OR phone = $1
+                    OR ($2 != '' AND RIGHT(regexp_replace(phone, '\\D', '', 'g'), 10) = $2)`,
+                [rawInput, last10Digits]
             );
 
             if (candResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Candidate account not found. Please check your Email, Mobile Number, or Candidate ID.' });
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Candidate account not found. Please check your Email, Mobile Number, or Candidate ID.' 
+                });
             }
 
             const candidate = candResult.rows[0];
 
             if (candidate.account_status === 'Blocked') {
-                return res.status(403).json({ success: false, message: 'Your candidate account has been blocked by administrators.' });
+                return res.status(403).json({ 
+                    success: false, 
+                    message: 'Your candidate account has been blocked by administrators.' 
+                });
             }
 
-            // Verify Password (BCrypt or Plain Text match)
+            // Verify Password (BCrypt hash or Plain text)
             let isMatch = false;
             const inputPassword = password ? password.trim() : "";
             
@@ -195,10 +203,13 @@ app.post('/api/auth/login', async (req, res) => {
             }
 
             if (!isMatch) {
-                return res.status(401).json({ success: false, message: 'Invalid Password. Please try again.' });
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Invalid Password. Please try again.' 
+                });
             }
 
-            console.log(`🔑 Successful Candidate Login: ${candidate.full_name} (${candidate.unique_id})`);
+            console.log(`🔑 Successful Login: ${candidate.full_name} (${candidate.unique_id})`);
             return res.json({ 
                 success: true, 
                 data: { 
@@ -217,7 +228,6 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error during login." });
     }
 });
-
 // Start Express Server
 app.listen(PORT, () => {
     console.log(`🚀 Backend server running on http://localhost:${PORT}`);
