@@ -202,31 +202,56 @@ app.post('/api/auth/login', async (req, res) => {
 if (role === 'employer') {
             const companyNameInput = req.body.company_name ? req.body.company_name.trim() : "";
 
-            // FEATURE 6: Employer login must match Email AND Company Name together[cite: 2]
+            // STEP 1: Search by Work Email FIRST
             const empResult = await pool.query(
-                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1) AND LOWER(TRIM(company_name)) = LOWER($2)", 
-                [rawInput, companyNameInput]
+                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", 
+                [rawInput]
             );
 
-            // FEATURE 6: Distinguish "not registered" from "wrong password"[cite: 2]
+            // If email is not found, the registration didn't save
             if (empResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Employer account not found or Company Name is incorrect.' });
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'No registered employer account found with this Work Email.' 
+                });
             }
 
             const employer = empResult.rows[0];
+
+            // STEP 2: Verify Company Name matches the registered record
+            if (companyNameInput && employer.company_name.trim().toLowerCase() !== companyNameInput.toLowerCase()) {
+                return res.status(401).json({ 
+                    success: false, 
+                    message: `Company Name mismatch! Registered name in DB is: "${employer.company_name}"` 
+                });
+            }
+
+            // STEP 3: Verify Account Approval Status[cite: 2]
             const currentStatus = (employer.status || 'pending').toLowerCase().trim();
 
-            if (currentStatus === 'pending') return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
-            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
-            if (currentStatus !== 'approved') return res.status(403).json({ success: false, message: 'Account not approved for login.' });
+            if (currentStatus === 'pending') {
+                return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
+            }
+            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') {
+                return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
+            }
+            if (currentStatus !== 'approved') {
+                return res.status(403).json({ success: false, message: 'Account not approved for login.' });
+            }
 
+            // STEP 4: Verify Password[cite: 2]
             let isMatch = employer.password && employer.password.startsWith('$2') 
                 ? await bcrypt.compare(password, employer.password) 
                 : (password === employer.password);
 
-            if (!isMatch) return res.status(401).json({ success: false, message: 'Incorrect password.' });
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: 'Incorrect password.' });
+            }
 
-            return res.json({ success: true, data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } });
+            return res.json({ 
+                success: true, 
+                data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } 
+            });
         }
 
         if (role === 'candidate' || !role) {
