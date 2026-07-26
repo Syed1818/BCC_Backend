@@ -198,19 +198,16 @@ app.post('/api/auth/login', async (req, res) => {
                 data: { id: admin.unique_id || admin.id, name: admin.full_name || 'Admin', email: admin.email, role: 'admin' } 
             });
         }
-        
-       if (role === 'employer') {
+        if (role === 'employer') {
             const empResult = await pool.query("SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
             if (empResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Employer account not found.' });
 
             const employer = empResult.rows[0];
-            
-            // Check your database's actual approval column (is_approved) or text status safely
-            const isApproved = employer.is_approved === true || (employer.status && employer.status.toLowerCase().trim() === 'approved');
-            const isBlocked = employer.status && ['rejected', 'blacklisted'].includes(employer.status.toLowerCase().trim());
+            const currentStatus = (employer.status || 'pending').toLowerCase().trim();
 
-            if (isBlocked) return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
-            if (!isApproved) return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
+            if (currentStatus === 'pending') return res.status(403).json({ success: false, message: 'Your company registration is currently PENDING admin approval.' });
+            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') return res.status(403).json({ success: false, message: 'Your company registration has been restricted by the admin.' });
+            if (currentStatus !== 'approved') return res.status(403).json({ success: false, message: 'Account not approved for login.' });
 
             let isMatch = employer.password && employer.password.startsWith('$2') 
                 ? await bcrypt.compare(password, employer.password) 
