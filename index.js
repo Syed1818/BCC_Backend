@@ -673,15 +673,17 @@ app.post('/api/candidate/feedback', async (req, res) => {
 // 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
 // --- ADMIN: GET LIVE ATTENDANCE HISTORY ---
+// --- ADMIN: GET LIVE ATTENDANCE HISTORY ---
 app.get('/api/admin/attendance-history', async (req, res) => {
     try {
+        // FIXED: Selecting checked_in_at and hardcoding gate/status for the UI
         const query = `
             SELECT 
                 a.id,
-                a.created_at as time,
+                a.checked_in_at as time,
                 a.user_type as role,
-                COALESCE(a.gate, 'Main Gate') as gate,
-                COALESCE(a.status, 'Checked In') as status,
+                'Main Gate' as gate,
+                'Checked In' as status,
                 e.name as event_name,
                 CASE 
                     WHEN a.user_type = 'candidate' THEN c.unique_id
@@ -695,7 +697,7 @@ app.get('/api/admin/attendance-history', async (req, res) => {
             JOIN events e ON a.event_id = e.id
             LEFT JOIN candidates c ON a.user_id = c.id AND a.user_type = 'candidate'
             LEFT JOIN employers emp ON a.user_id = emp.id AND a.user_type = 'employer'
-            ORDER BY a.created_at DESC
+            ORDER BY a.checked_in_at DESC
             LIMIT 100
         `;
         
@@ -706,6 +708,8 @@ app.get('/api/admin/attendance-history', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching attendance" });
     }
 });
+
+
 app.get('/api/admin/live-events', async (req, res) => {
     try {
         const eventsResult = await pool.query('SELECT * FROM events WHERE is_live = TRUE ORDER BY created_at DESC');
