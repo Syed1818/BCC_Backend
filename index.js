@@ -182,12 +182,9 @@ app.post('/api/auth/login', async (req, res) => {
         const digitsOnly = rawInput.replace(/\D/g, "");
         const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
-        // 1. ADMIN LOGIN
         if (role === 'admin') {
             const adminResult = await pool.query("SELECT * FROM admins WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
-            if (adminResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Admin account not found.' });
-            }
+            if (adminResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Admin account not found.' });
 
             const admin = adminResult.rows[0];
             let isMatch = admin.password && admin.password.startsWith('$2') 
@@ -202,7 +199,6 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-        // 2. EMPLOYER LOGIN
         if (role === 'employer') {
             const empResult = await pool.query("SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
             if (empResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Employer account not found.' });
@@ -223,7 +219,6 @@ app.post('/api/auth/login', async (req, res) => {
             return res.json({ success: true, data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } });
         }
 
-        // 3. CANDIDATE LOGIN (Supports Email, Candidate ID, and Mobile Numbers with/without +91)
         if (role === 'candidate' || !role) {
             const queryText = `
                 SELECT * FROM candidates 
@@ -252,9 +247,7 @@ app.post('/api/auth/login', async (req, res) => {
                 ? await bcrypt.compare(password, candidate.password) 
                 : (password === candidate.password);
 
-            if (!isMatch) {
-                return res.status(401).json({ success: false, message: 'Invalid Password. Please try again.' });
-            }
+            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password. Please try again.' });
 
             console.log(`🔑 LOGIN SUCCESS: ${candidate.full_name} (${candidate.unique_id})`);
             return res.json({ 
@@ -332,7 +325,273 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
 
 // ==========================================
-// 5. ADMIN DASHBOARD & MANAGEMENT APIS
+// 5. CANDIDATE PORTAL & SAVED JOBS APIS (FEATURE 5 & 13)
+// ==========================================
+
+// --- GET CANDIDATE SAVED JOBS ---
+app.get('/api/candidate/:id/saved-jobs', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+
+        const candidateDbId = candCheck.rows[0].id;
+
+        const result = await pool.query(`
+            SELECT sj.id as saved_id, sj.status, sj.updated_at, j.id as job_id, j.title, j.company_name, j.location, j.job_type, j.salary_range, j.qualification_required
+            FROM candidate_saved_jobs sj
+            JOIN jobs j ON sj.job_id = j.id
+            WHERE sj.candidate_id = $1
+            ORDER BY sj.updated_at DESC
+        `, [candidateDbId]);
+
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("Error fetching saved jobs:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch saved jobs." });
+    }
+});
+
+// --- TOGGLE / SAVE A JOB (FEATURE 5) ---
+app.post('/api/candidate/saved-jobs/toggle', async (req, res) => {
+    const { candidateId, jobId, draftData } = req.body;
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [candidateId]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+
+        const dbCandId = candCheck.rows[0].id;
+
+        const existing = await pool.query(
+            "SELECT id FROM candidate_saved_jobs WHERE candidate_id = $1 AND job_id = $2",
+            [dbCandId, jobId]
+        );
+
+        if (existing.rows.length > 0) {
+            await pool.query("DELETE FROM candidate_saved_jobs WHERE id = $1", [existing.rows[0].id]);
+            return res.json({ success: true, saved: false, message: "Job removed from saved list." });
+        } else {
+            await pool.query(
+                "INSERT INTO candidate_saved_jobs (candidate_id, job_id, status, draft_data) VALUES ($1, $2, 'saved', $3)",
+                [dbCandId, jobId, draftData ? JSON.stringify(draftData) : null]
+            );
+            return res.json({ success: true, saved: true, message: "Job saved successfully!" });
+        }
+    } catch (error) {
+        console.error("Error toggling saved job:", error);
+        res.status(500).json({ success: false, message: "Server error toggling saved job." });
+    }
+});
+
+// --- REMOVE A SAVED JOB BY ID ---
+app.delete('/api/candidate/saved-jobs/:savedId', async (req, res) => {
+    try {
+        await pool.query("DELETE FROM candidate_saved_jobs WHERE id = $1", [req.params.savedId]);
+        res.json({ success: true, message: "Saved job removed." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Failed to remove saved job." });
+    }
+});
+
+// --- GET CANDIDATE PROFILE ---
+app.get('/api/candidate/:id', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found" });
+        const dbUser = result.rows[0];
+        res.status(200).json({ success: true, data: { uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, qualification: dbUser.highest_qualification || "N/A", experienceType: dbUser.experience_type || "Fresher", skills: dbUser.skills || [], completion: 95 } });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/candidate/profile/:id', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false });
+        const dbUser = result.rows[0];
+        res.json({ success: true, data: {
+            uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, dob: dbUser.dob ? new Date(dbUser.dob).toISOString().split('T')[0] : "", gender: dbUser.gender, language: dbUser.preferred_language, category: dbUser.category,
+            state: dbUser.state, district: dbUser.district, taluk: dbUser.taluk, pincode: dbUser.pincode, qualification: dbUser.highest_qualification, institution: dbUser.institution, schoolName: dbUser.school_name,
+            course: dbUser.course, specialization: dbUser.specialization, yearOfPassing: dbUser.year_of_passing, percentage: dbUser.percentage_cgpa, languagesFluent: dbUser.languages_fluent || [], skills: dbUser.skills || [],
+            experienceType: dbUser.experience_type, yearsOfExperience: dbUser.years_of_experience, employmentStatus: dbUser.employment_status, currentRole: dbUser.current_job_role, currentCompany: dbUser.current_company,
+            resumeFileName: dbUser.resume_file_name, preferredRoles: dbUser.preferred_roles || [], preferredLocations: dbUser.preferred_locations || [],
+            preferredJobType: dbUser.preferred_job_type, expectedSalary: dbUser.expected_salary, willingToRelocate: dbUser.willing_to_relocate
+        }});
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.put('/api/candidate/profile/update', async (req, res) => {
+    const data = req.body;
+    try {
+        await pool.query(`
+            UPDATE candidates SET full_name=$1, email=$2, phone=$3, dob=$4, gender=$5, preferred_language=$6, category=$7, state=$8, district=$9, taluk=$10, pincode=$11,
+            highest_qualification=$12, institution=$13, school_name=$14, course=$15, specialization=$16, year_of_passing=$17, percentage_cgpa=$18, languages_fluent=$19,
+            skills=$20, experience_type=$21, years_of_experience=$22, employment_status=$23, current_job_role=$24, current_company=$25,
+            resume_file_name=$26, preferred_roles=$27, preferred_locations=$28, willing_to_relocate=$29, preferred_job_type=$30, expected_salary=$31 WHERE unique_id=$32
+        `, [
+            data.fullName, data.email, data.phone, data.dob || null, data.gender, data.language, data.category, data.state, data.district, data.taluk, data.pincode, data.qualification, data.institution, data.schoolName, data.course, data.specialization, data.yearOfPassing, data.percentage, JSON.stringify(data.languagesFluent || []),
+            JSON.stringify(data.skills || []), data.experienceType, data.yearsOfExperience, data.employmentStatus, data.currentRole, data.currentCompany,
+            data.resumeFileName, JSON.stringify(data.preferredRoles || []), JSON.stringify(data.preferredLocations || []), data.willing_to_relocate || false, data.preferredJobType, data.expectedSalary, data.uniqueId
+        ]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// --- MATCHED JOBS & CATEGORY FILTERING (FEATURE 13) ---
+app.get('/api/candidate/:id/jobs', async (req, res) => {
+    try {
+        const candidateRes = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (candidateRes.rows.length === 0) return res.status(404).json({ success: false });
+        const candidate = candidateRes.rows[0];
+        const jobsRes = await pool.query("SELECT * FROM jobs WHERE status = 'approved'");
+        
+        // Fetch saved job IDs for this candidate to mark isSaved correctly
+        const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidate.id]);
+        const savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
+
+        const matchedJobs = jobsRes.rows.map(job => {
+            let score = 0;
+            let jobSkills = []; try { jobSkills = typeof job.skills_required === 'string' ? JSON.parse(job.skills_required) : (job.skills_required || []); } catch(e){}
+            let candidateSkills = []; try { candidateSkills = typeof candidate.skills === 'string' ? JSON.parse(candidate.skills) : (candidate.skills || []); } catch(e){}
+            
+            if (jobSkills.length > 0) {
+                const matchedSkills = jobSkills.filter(js => candidateSkills.some(cs => cs.toLowerCase() === js.toLowerCase()));
+                score += (matchedSkills.length / jobSkills.length) * 50;
+            } else { score += 50; }
+            
+            let preferredLocs = []; try { preferredLocs = typeof candidate.preferred_locations === 'string' ? JSON.parse(candidate.preferred_locations) : []; } catch(e){}
+            if ((job.location || "").toLowerCase() === (candidate.district || "").toLowerCase() || preferredLocs.some(loc => loc.toLowerCase() === (job.location || "").toLowerCase()) || candidate.willing_to_relocate) score += 20;
+            
+            if (!job.qualification_required || job.qualification_required === "Any Degree" || job.qualification_required === candidate.highest_qualification || candidate.highest_qualification === "PG Degree" || candidate.highest_qualification === "BE/B-Tech") score += 15;
+            
+            let prefRoles = []; try { prefRoles = typeof candidate.preferred_roles === 'string' ? JSON.parse(candidate.preferred_roles) : []; } catch(e){}
+            if (prefRoles.some(role => (job.title || "").toLowerCase().includes(role.toLowerCase()))) score += 15;
+            
+            return { 
+                id: job.id, 
+                company: job.company_name, 
+                title: job.title, 
+                type: job.job_type, 
+                location: job.location, 
+                qualification: job.qualification_required, 
+                experience: job.experience_required, 
+                salary: job.salary_range, 
+                skills: jobSkills, 
+                matchScore: Math.round(score),
+                isSaved: savedJobIds.has(job.id)
+            };
+        }).sort((a, b) => b.matchScore - a.matchScore);
+
+        res.json({ success: true, data: matchedJobs });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/applications/apply', async (req, res) => {
+    try {
+        const checkDuplicate = await pool.query("SELECT * FROM job_applications WHERE job_id = $1 AND candidate_id = $2", [req.body.jobId, req.body.candidateId]);
+        if (checkDuplicate.rows.length > 0) return res.status(400).json({ success: false, message: "You have already applied for this job." });
+        await pool.query("INSERT INTO job_applications (job_id, candidate_id, employer_id, status) VALUES ($1, $2, $3, 'Applied')", [req.body.jobId, req.body.candidateId, req.body.employerId]);
+        res.status(200).json({ success: true, message: "Application submitted successfully!" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/candidate/:id/applications', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        const result = await pool.query(`
+            SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, j.event_id, e.name as event_name
+            FROM job_applications ja JOIN jobs j ON ja.job_id = j.id LEFT JOIN events e ON j.event_id = e.id
+            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 ORDER BY ja.applied_at DESC
+        `, [req.params.id, candidateIntId.toString()]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/candidate/:id/events', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        const result = await pool.query(`
+            SELECT e.*, r.entry_pass_id, r.queue_token, r.attendance_status, r.registered_at FROM events e
+            LEFT JOIN event_candidate_registrations r ON e.id = r.event_id AND (r.candidate_id::text = $1 OR r.candidate_id::text = $2)
+            WHERE (e.status IS NULL OR e.status != 'Deleted') OR r.id IS NOT NULL ORDER BY e.id DESC
+        `, [req.params.id, candidateIntId.toString()]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/events/apply', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate account not found." });
+        const eventCheck = await pool.query("SELECT status FROM events WHERE id = $1", [req.body.eventId]);
+        if (eventCheck.rows.length > 0 && eventCheck.rows[0].status === 'Hold') return res.status(400).json({ success: false, message: "This event is currently on hold." });
+        const duplicateCheck = await pool.query("SELECT id FROM event_candidate_registrations WHERE event_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)", [req.body.eventId, req.body.candidateId, candCheck.rows[0].id.toString()]);
+        if (duplicateCheck.rows.length > 0) return res.status(400).json({ success: false, message: "You have already registered for this event." });
+        
+        const passId = `BCC-evt-${req.body.eventId}-${Date.now().toString().slice(-5)}`;
+        const queueToken = `A-${Math.floor(100 + Math.random() * 900)}`;
+        try {
+            await pool.query("INSERT INTO event_candidate_registrations (event_id, candidate_id, entry_pass_id, queue_token, attendance_status) VALUES ($1, $2, $3, $4, 'Pending')", [req.body.eventId, req.body.candidateId, passId, queueToken]);
+        } catch (insertError) {
+            if (insertError.code === '22P02') await pool.query("INSERT INTO event_candidate_registrations (event_id, candidate_id, entry_pass_id, queue_token, attendance_status) VALUES ($1, $2, $3, $4, 'Pending')", [req.body.eventId, candCheck.rows[0].id, passId, queueToken]);
+            else throw insertError;
+        }
+        res.json({ success: true, message: "Successfully registered!", passId, queueToken });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/candidate/:id/interviews', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        const result = await pool.query(`
+            SELECT i.id as interview_id, i.interview_type, i.interview_date, i.interview_time, i.location_or_link, i.status as interview_status, ja.id as application_id, j.title as job_title, j.company_name
+            FROM interviews i JOIN job_applications ja ON i.application_id = ja.id JOIN jobs j ON ja.job_id = j.id
+            WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) ORDER BY i.interview_date ASC, i.interview_time ASC
+        `, [req.params.id, candidateIntId.toString()]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.get('/api/candidate/:id/history', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (candCheck.rows.length === 0) return res.json({ success: true, data: [] });
+        const result = await pool.query("SELECT * FROM candidate_activity_logs WHERE candidate_id = $1 ORDER BY created_at DESC", [candCheck.rows[0].id]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/candidate/history/log', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
+        await pool.query("INSERT INTO candidate_activity_logs (candidate_id, action_type, title, description) VALUES ($1, $2, $3, $4)", [candCheck.rows[0].id, req.body.actionType, req.body.title, req.body.description]);
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.delete('/api/candidate/:id/history', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
+        await pool.query("DELETE FROM candidate_activity_logs WHERE candidate_id = $1", [candCheck.rows[0].id]);
+        res.json({ success: true });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+app.post('/api/candidate/feedback', async (req, res) => {
+    try {
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
+        await pool.query("INSERT INTO candidate_feedback (candidate_id, overall_rating, registration_exp, interview_quality, event_management, video_url) VALUES ($1, $2, $3, $4, $5, $6)", 
+        [candCheck.rows[0].id, req.body.rating, req.body.registrationExp, req.body.interviewQuality, req.body.eventManagement, req.body.videoUrl]);
+        res.json({ success: true, message: "Feedback submitted successfully!" });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+
+// ==========================================
+// 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
 app.get('/api/admin/live-events', async (req, res) => {
     try {
@@ -443,93 +702,6 @@ app.get('/api/admin/events/:eventId/venue', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-app.post('/api/admin/events/:eventId/blocks', async (req, res) => {
-    try {
-        await pool.query("INSERT INTO venue_blocks (event_id, type, name, code) VALUES ($1, $2, $3, $4)", [req.params.eventId, req.body.kind, req.body.name, req.body.code]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/blocks/:blockId', async (req, res) => {
-    try {
-        await pool.query("UPDATE venue_blocks SET type = $1, name = $2, code = $3 WHERE id = $4", [req.body.kind, req.body.name, req.body.code, req.params.blockId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.delete('/api/admin/blocks/:blockId', async (req, res) => {
-    try {
-        await pool.query("DELETE FROM venue_blocks WHERE id = $1", [req.params.blockId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/admin/blocks/:blockId/rooms', async (req, res) => {
-    try {
-        await pool.query("INSERT INTO venue_rooms (block_id, name, code) VALUES ($1, $2, $3)", [req.params.blockId, req.body.name, req.body.code]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/rooms/:roomId', async (req, res) => {
-    try {
-        await pool.query("UPDATE venue_rooms SET name = $1, code = $2 WHERE id = $3", [req.body.name, req.body.code, req.params.roomId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.delete('/api/admin/rooms/:roomId', async (req, res) => {
-    try {
-        await pool.query("DELETE FROM venue_stalls WHERE room_id = $1", [req.params.roomId]);
-        await pool.query("DELETE FROM venue_rooms WHERE id = $1", [req.params.roomId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/admin/events/:eventId/stalls', async (req, res) => {
-    const { blockId, roomId, count, prefix } = req.body;
-    try {
-        for (let i = 1; i <= count; i++) {
-            const code = `${prefix}-${i.toString().padStart(2, '0')}`;
-            await pool.query("INSERT INTO venue_stalls (event_id, block_id, room_id, name, code) VALUES ($1, $2, $3, $4, $5)", [req.params.eventId, blockId, roomId || null, `${prefix} ${i}`, code]);
-        }
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/stalls/:stallId', async (req, res) => {
-    try {
-        await pool.query("UPDATE venue_stalls SET code = $1 WHERE id = $2", [req.body.code, req.params.stallId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/stalls/:stallId/allocate', async (req, res) => {
-    try {
-        await pool.query("UPDATE venue_stalls SET employer_id = $1 WHERE id = $2", [req.body.employerId, req.params.stallId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.delete('/api/admin/stalls/:stallId', async (req, res) => {
-    try {
-        await pool.query("DELETE FROM venue_stalls WHERE id = $1", [req.params.stallId]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/admin/events/:eventId/applications', async (req, res) => {
-    try {
-        const apps = await pool.query(`
-            SELECT es.id, es.status, e.id as employer_id, e.company_name as "employerName", 
-                   'HR Manager' as "contactName", e.email as "contactPhone", 
-                   'Various' as "rolesToHire", 5 as "candidatesNeeded"
-            FROM employer_event_stalls es JOIN employers e ON es.employer_id = e.id WHERE es.event_id = $1
-        `, [req.params.eventId]);
-        res.json({ success: true, data: apps.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
 app.get('/api/admin/stall-applications', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -543,33 +715,10 @@ app.get('/api/admin/stall-applications', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-app.put('/api/admin/stall-applications/:id/approve', async (req, res) => {
-    try {
-        await pool.query("UPDATE employer_event_stalls SET status = 'approved', is_approved = TRUE WHERE id = $1", [req.params.id]);
-        res.json({ success: true, message: 'Application approved' });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/stall-applications/:id/reject', async (req, res) => {
-    try {
-        await pool.query("UPDATE employer_event_stalls SET status = 'rejected', is_approved = FALSE WHERE id = $1", [req.params.id]);
-        res.json({ success: true, message: 'Application rejected' });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
 app.get('/api/admin/jobs', async (req, res) => {
     try {
         const result = await pool.query(`SELECT id, title, company_name AS company, job_type AS type, location, status AS "approvalStatus", created_at AS "postedAt" FROM jobs ORDER BY created_at DESC`);
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/admin/jobs/:jobId/review', async (req, res) => {
-    if (!['approved', 'rejected'].includes(req.body.status)) return res.status(400).json({ success: false, message: "Invalid status." });
-    try {
-        const result = await pool.query("UPDATE jobs SET status = $1 WHERE id = $2 RETURNING *", [req.body.status, req.params.jobId]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false });
-        res.json({ success: true, message: `Job ${req.body.status}` });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
@@ -590,15 +739,6 @@ app.get('/api/admin/employers', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-app.put('/api/admin/employers/:id/status', async (req, res) => {
-    if (!['approved', 'rejected', 'blacklisted'].includes(req.body.status)) return res.status(400).json({ success: false, message: "Invalid status." });
-    try {
-        const result = await pool.query("UPDATE employers SET status = $1 WHERE id = $2 RETURNING *", [req.body.status, req.params.id]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false });
-        res.json({ success: true, message: `Employer status updated to ${req.body.status}.` });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
 app.get('/api/admin/candidates', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -611,17 +751,9 @@ app.get('/api/admin/candidates', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-app.put('/api/admin/candidates/:id/status', async (req, res) => {
-    try {
-        const result = await pool.query("UPDATE candidates SET account_status = $1 WHERE unique_id = $2 RETURNING *", [req.body.status, req.params.id]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false });
-        res.json({ success: true, message: `Candidate status updated to ${req.body.status}.` });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
 
 // ==========================================
-// 6. EMPLOYER PORTAL APIS
+// 7. EMPLOYER PORTAL APIS
 // ==========================================
 app.get('/api/employer/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
@@ -647,14 +779,9 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
             WHERE ja.employer_id = $1 ORDER BY ja.applied_at DESC LIMIT 5
         `, [employerId]);
 
-        const trendRes = await pool.query(`SELECT DATE(applied_at) as date, COUNT(*) as count FROM job_applications WHERE employer_id = $1 AND applied_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(applied_at) ORDER BY DATE(applied_at) ASC`, [employerId]);
-        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const chartData = trendRes.rows.map(row => ({ day: days[new Date(row.date).getDay()], applications: parseInt(row.count) }));
-
         res.json({ success: true, data: {
             kpis: { activeJobs: parseInt(activeJobs.rows[0].count), applications: parseInt(totalApps.rows[0].count), interviews: parseInt(interviews.rows[0].count), offersMade: parseInt(offers.rows[0].count) },
-            funnelData: funnel, recentApplicants: recentApps.rows,
-            chartData: chartData.length > 0 ? chartData : [{ day: 'Mon', applications: 2 }, { day: 'Tue', applications: 5 }, { day: 'Wed', applications: 3 }, { day: 'Thu', applications: 8 }]
+            funnelData: funnel, recentApplicants: recentApps.rows
         }});
     } catch (error) { res.status(500).json({ success: false }); }
 });
@@ -665,427 +792,13 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status = 'Hired'", [req.params.employerId]);
         const totalApps = parseInt(appsRes.rows[0].count) || 0;
         const totalHires = parseInt(hiresRes.rows[0].count) || 0;
-        
-        const historyRes = await pool.query(`
-            SELECT ja.id as app_id, ja.status as action_type, ja.applied_at as date, c.full_name as candidate_name, j.title as job_title, j.event_id, e.name as event_name
-            FROM job_applications ja JOIN candidates c ON ja.candidate_id = c.unique_id JOIN jobs j ON ja.job_id = j.id LEFT JOIN events e ON j.event_id = e.id
-            WHERE ja.employer_id = $1 ORDER BY ja.applied_at DESC
-        `, [req.params.employerId]);
 
         res.json({
             success: true,
             data: {
-                kpis: { conversionRate: totalApps > 0 ? ((totalHires / totalApps) * 100).toFixed(1) : "0.0", avgTime: totalHires > 0 ? "6 days" : "N/A", totalHires, talentPool: totalApps },
-                monthlyData: [ { month: 'Jan', apps: 0, hires: 0 }, { month: 'Feb', apps: 0, hires: 0 }, { month: 'Mar', apps: 0, hires: 0 }, { month: 'Apr', apps: 0, hires: 0 }, { month: 'May', apps: 0, hires: 0 }, { month: 'Jun', apps: totalApps, hires: totalHires } ],
-                history: historyRes.rows
+                kpis: { conversionRate: totalApps > 0 ? ((totalHires / totalApps) * 100).toFixed(1) : "0.0", avgTime: totalHires > 0 ? "6 days" : "N/A", totalHires, talentPool: totalApps }
             }
         });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [req.params.employerId]);
-        res.json({ success: true, count: parseInt(result.rows[0].count) || 0 });
-    } catch (error) { res.status(500).json({ success: false, count: 0 }); }
-});
-
-app.get('/api/employer/profile/:employerId', async (req, res) => {
-    try {
-        const query = `
-            SELECT e.id AS employer_id, e.company_name, e.email AS work_email, e.hr_name, e.hr_phone AS mobile, e.industry, e.hq_city, e.about_company,
-                   rp.full_name, rp.designation, rp.department, rp.preferred_language, rp.about_you, rp.profile_photo_url
-            FROM employers e LEFT JOIN recruiter_profiles rp ON e.id = rp.employer_id WHERE e.id::text = $1 OR e.email = $1
-        `;
-        const result = await pool.query(query, [req.params.employerId]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false });
-
-        const row = result.rows[0];
-        res.json({ success: true, data: {
-            employerId: row.employer_id, companyName: row.company_name, fullName: row.full_name || row.hr_name || "Recruiter",
-            designation: row.designation || "Talent Acquisition Manager", email: row.work_email, mobile: row.mobile || "+91 00000 00000",
-            department: row.department || "tech", language: row.preferred_language || "en", about: row.about_you || row.about_company || "", photoUrl: row.profile_photo_url || ""
-        }});
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/employer/profile/update', async (req, res) => {
-    const { employerId, fullName, designation, mobile, department, language, about, photoUrl } = req.body;
-    try {
-        await pool.query(`
-            INSERT INTO recruiter_profiles (employer_id, full_name, designation, mobile, department, preferred_language, about_you, profile_photo_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (employer_id) DO UPDATE SET full_name = EXCLUDED.full_name, designation = EXCLUDED.designation, mobile = EXCLUDED.mobile, department = EXCLUDED.department, preferred_language = EXCLUDED.preferred_language, about_you = EXCLUDED.about_you, profile_photo_url = EXCLUDED.profile_photo_url
-        `, [employerId, fullName, designation, mobile, department, language, about, photoUrl]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/events', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM events WHERE status != 'completed' ORDER BY event_date ASC");
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/:employerId/applications', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT es.*, s.code as "stallNo", b.name as "hall" FROM employer_event_stalls es
-            LEFT JOIN venue_stalls s ON s.employer_id = es.employer_id AND s.event_id = es.event_id LEFT JOIN venue_blocks b ON s.block_id = b.id WHERE es.employer_id = $1
-        `, [req.params.employerId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/employer/apply', async (req, res) => {
-    const { employerId, eventId, rolesToHire, candidatesNeeded, paymentId } = req.body;
-    try {
-        await pool.query(`INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, roles_to_hire, vacancies_count) VALUES ($1, $2, 'pending', 'Paid (Ref: ' || $3 || ')', $4, $5)`, 
-        [employerId, eventId, paymentId, rolesToHire, parseInt(candidatesNeeded)]);
-        res.json({ success: true, message: 'Application filed successfully' });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/employer/attendance', async (req, res) => {
-    try {
-        const eventRes = await pool.query("SELECT id FROM events WHERE qr_code_string = $1", [req.body.qrString]);
-        if (eventRes.rows.length === 0) return res.status(400).json({ success: false, message: "Invalid QR Code" });
-        await pool.query("INSERT INTO event_attendance (event_id, user_type, user_id, status) VALUES ($1, 'employer', $2, 'Present') ON CONFLICT DO NOTHING", [eventRes.rows[0].id, req.body.employerId]);
-        res.json({ success: true, message: "Attendance marked successfully! Workspace unlocked." });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, title, job_type, location, experience_required, salary_range, vacancies, created_at, status FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [req.params.employerId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/employer/jobs', async (req, res) => {
-    const { employerId, title, jobType, location, experience, salary, vacancies, qualification, skills } = req.body;
-    try {
-        const empCheck = await pool.query("SELECT company_name FROM employers WHERE id = $1", [employerId]);
-        if (empCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query(`
-            INSERT INTO jobs (employer_id, company_name, title, job_type, location, experience_required, salary_range, vacancies, qualification_required, skills_required, status) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
-        `, [employerId, empCheck.rows[0].company_name, title, jobType, location, experience, salary, parseInt(vacancies) || 1, qualification, JSON.stringify(skills || [])]);
-        res.status(201).json({ success: true, message: "Job posted successfully." });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/employer/jobs/:jobId', async (req, res) => {
-    const { title, jobType, location, experience, salary, vacancies, qualification, skills } = req.body;
-    try {
-        await pool.query(`UPDATE jobs SET title = $1, job_type = $2, location = $3, experience_required = $4, salary_range = $5, vacancies = $6, qualification_required = $7, skills_required = $8, status = 'pending' WHERE id = $9`, 
-        [title, jobType, location, experience, salary, parseInt(vacancies) || 1, qualification, JSON.stringify(skills || []), req.params.jobId]);
-        res.json({ success: true, message: "Job updated." });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.delete('/api/employer/jobs/:jobId', async (req, res) => {
-    try {
-        await pool.query("DELETE FROM job_applications WHERE job_id = $1", [req.params.jobId]);
-        await pool.query("DELETE FROM jobs WHERE id = $1", [req.params.jobId]);
-        res.json({ success: true, message: "Job deleted successfully." });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/:employerId/job-options', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, title, location, created_at FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [req.params.employerId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
-    try {
-        const jobRes = await pool.query("SELECT * FROM jobs WHERE id = $1", [req.params.jobId]);
-        if (jobRes.rows.length === 0) return res.status(404).json({ success: false });
-        const job = jobRes.rows[0];
-
-        const result = await pool.query(`
-            SELECT ja.id as application_id, ja.status as app_status, ja.applied_at,
-                   c.unique_id, c.full_name, c.email, c.phone, c.highest_qualification, c.experience_type, c.skills, c.resume_file_name, c.district, c.preferred_locations, c.willing_to_relocate, c.preferred_roles
-            FROM job_applications ja JOIN candidates c ON ja.candidate_id = c.unique_id WHERE ja.job_id = $1 ORDER BY ja.applied_at DESC
-        `, [req.params.jobId]);
-        
-        const data = result.rows.map(candidate => {
-            let score = 0;
-            let jobSkills = []; try { jobSkills = typeof job.skills_required === 'string' ? JSON.parse(job.skills_required) : (job.skills_required || []); } catch(e){}
-            let candidateSkills = []; try { candidateSkills = typeof candidate.skills === 'string' ? JSON.parse(candidate.skills) : (candidate.skills || []); } catch(e){}
-            if (jobSkills.length > 0) {
-                const matchedSkills = jobSkills.filter(js => candidateSkills.some(cs => cs.toLowerCase() === js.toLowerCase()));
-                score += (matchedSkills.length / jobSkills.length) * 50;
-            } else { score += 50; }
-
-            let preferredLocs = []; try { preferredLocs = typeof candidate.preferred_locations === 'string' ? JSON.parse(candidate.preferred_locations) : []; } catch(e){}
-            const candidateCity = candidate.district || "";
-            if ((job.location || "").toLowerCase() === candidateCity.toLowerCase() || preferredLocs.some(loc => loc.toLowerCase() === (job.location || "").toLowerCase()) || candidate.willing_to_relocate) score += 20;
-
-            if (!job.qualification_required || job.qualification_required === "Any Degree" || job.qualification_required === candidate.highest_qualification || candidate.highest_qualification === "PG Degree" || candidate.highest_qualification === "BE/B-Tech") score += 15;
-
-            let prefRoles = []; try { prefRoles = typeof candidate.preferred_roles === 'string' ? JSON.parse(candidate.preferred_roles) : []; } catch(e){}
-            if (prefRoles.length === 0 || prefRoles.some(role => (job.title || "").toLowerCase().includes(role.toLowerCase()))) score += 15;
-
-            return { ...candidate, matchScore: Math.round(score) };
-        });
-        res.json({ success: true, data });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/employer/applications/:appId/status', async (req, res) => {
-    try {
-        await pool.query("UPDATE job_applications SET status = $1 WHERE id = $2", [req.body.status, req.params.appId]);
-        res.json({ success: true, message: `Status updated to ${req.body.status}` });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/employer/:employerId/interviews', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT i.*, c.full_name as candidate_name, j.title as job_title FROM interviews i
-            JOIN candidates c ON i.candidate_id = c.unique_id JOIN jobs j ON i.job_id = j.id WHERE i.employer_id = $1 ORDER BY i.interview_date ASC, i.interview_time ASC
-        `, [req.params.employerId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/employer/interviews', async (req, res) => {
-    const { applicationId, jobId, employerId, candidateId, type, date, time, location } = req.body;
-    try {
-        await pool.query(`INSERT INTO interviews (application_id, job_id, employer_id, candidate_id, interview_type, interview_date, interview_time, location_or_link) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [applicationId, jobId, employerId, candidateId, type, date, time, location]);
-        await pool.query("UPDATE job_applications SET status = 'Interview Scheduled' WHERE id = $1", [applicationId]);
-        res.json({ success: true, message: "Interview scheduled successfully!" });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/employer/interviews/:id/status', async (req, res) => {
-    try {
-        await pool.query("UPDATE interviews SET status = $1 WHERE id = $2", [req.body.status, req.params.id]);
-        res.json({ success: true, message: `Interview marked as ${req.body.status}` });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/applications/:appId/messages', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM application_messages WHERE application_id = $1 ORDER BY created_at ASC", [req.params.appId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/applications/:appId/messages', async (req, res) => {
-    try {
-        await pool.query("INSERT INTO application_messages (application_id, sender_type, sender_id, message) VALUES ($1, $2, $3, $4)", [req.params.appId, req.body.senderType, req.body.senderId, req.body.message]);
-        res.json({ success: true, message: "Message sent" });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/employer/feedback', async (req, res) => {
-    try {
-        if (!req.body.employerId) return res.status(400).json({ success: false, message: "Missing employer ID" });
-        await pool.query("INSERT INTO employer_feedback (employer_id, overall_rating, candidate_quality, event_organization, hiring_efficiency, video_url) VALUES ($1, $2, $3, $4, $5, $6)", 
-        [req.body.employerId, req.body.rating, req.body.candidateQuality, req.body.eventOrganization, req.body.hiringEfficiency, req.body.videoUrl]);
-        res.json({ success: true, message: "Feedback submitted successfully for admin review!" });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-
-// ==========================================
-// 7. CANDIDATE PORTAL APIS
-// ==========================================
-app.get('/api/candidate/:id', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found" });
-        const dbUser = result.rows[0];
-        res.status(200).json({ success: true, data: { uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, qualification: dbUser.highest_qualification || "N/A", experienceType: dbUser.experience_type || "Fresher", skills: dbUser.skills || [], completion: 95 } });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/profile/:id', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (result.rows.length === 0) return res.status(404).json({ success: false });
-        const dbUser = result.rows[0];
-        res.json({ success: true, data: {
-            uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, dob: dbUser.dob ? new Date(dbUser.dob).toISOString().split('T')[0] : "", gender: dbUser.gender, language: dbUser.preferred_language, category: dbUser.category,
-            state: dbUser.state, district: dbUser.district, taluk: dbUser.taluk, pincode: dbUser.pincode, qualification: dbUser.highest_qualification, institution: dbUser.institution, schoolName: dbUser.school_name,
-            course: dbUser.course, specialization: dbUser.specialization, yearOfPassing: dbUser.year_of_passing, percentage: dbUser.percentage_cgpa, languagesFluent: dbUser.languages_fluent || [], skills: dbUser.skills || [],
-            experienceType: dbUser.experience_type, yearsOfExperience: dbUser.years_of_experience, employmentStatus: dbUser.employment_status, currentRole: dbUser.current_job_role, currentCompany: dbUser.current_company,
-            industry: dbUser.industry, functionalArea: dbUser.functional_area, employmentType: dbUser.employment_type, noticePeriod: dbUser.notice_period, currentSalary: dbUser.current_salary, workLocation: dbUser.work_location, joinedFrom: dbUser.joined_from, joinedTo: dbUser.joined_to,
-            currentlyWorking: dbUser.currently_working, jobDescription: dbUser.job_description, reasonForChange: dbUser.reason_for_change, resumeFileName: dbUser.resume_file_name, preferredRoles: dbUser.preferred_roles || [], preferredLocations: dbUser.preferred_locations || [],
-            preferredJobType: dbUser.preferred_job_type, expectedSalary: dbUser.expected_salary, willingToRelocate: dbUser.willing_to_relocate
-        }});
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-app.put('/api/candidate/profile/update', async (req, res) => {
-    const data = req.body;
-    try {
-        await pool.query(`
-            UPDATE candidates SET full_name=$1, email=$2, phone=$3, dob=$4, gender=$5, preferred_language=$6, category=$7, state=$8, district=$9, taluk=$10, pincode=$11,
-            highest_qualification=$12, institution=$13, school_name=$14, course=$15, specialization=$16, year_of_passing=$17, percentage_cgpa=$18, languages_fluent=$19,
-            skills=$20, experience_type=$21, years_of_experience=$22, employment_status=$23, current_job_role=$24, current_company=$25, industry=$26, functional_area=$27, employment_type=$28, notice_period=$29, current_salary=$30, work_location=$31, joined_from=$32, joined_to=$33, currently_working=$34, job_description=$35, reason_for_change=$36,
-            resume_file_name=$37, preferred_roles=$38, preferred_locations=$39, willing_to_relocate=$40, preferred_job_type=$41, expected_salary=$42 WHERE unique_id=$43
-        `, [
-            data.fullName, data.email, data.phone, data.dob || null, data.gender, data.language, data.category, data.state, data.district, data.taluk, data.pincode, data.qualification, data.institution, data.schoolName, data.course, data.specialization, data.yearOfPassing, data.percentage, JSON.stringify(data.languagesFluent || []),
-            JSON.stringify(data.skills || []), data.experienceType, data.yearsOfExperience, data.employmentStatus, data.currentRole, data.currentCompany, data.industry, data.functionalArea, data.employmentType, data.noticePeriod, data.currentSalary, data.workLocation, data.joinedFrom, data.joinedTo, data.currentlyWorking || false, data.jobDescription, data.reasonForChange,
-            data.resumeFileName, JSON.stringify(data.preferredRoles || []), JSON.stringify(data.preferredLocations || []), data.willingToRelocate || false, data.preferredJobType, data.expectedSalary, data.uniqueId
-        ]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/jobs/all', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM jobs WHERE status = 'approved' LIMIT 20");
-        res.json({ success: true, data: result.rows });
-    } catch (err) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/:id/jobs', async (req, res) => {
-    try {
-        const candidateRes = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candidateRes.rows.length === 0) return res.status(404).json({ success: false });
-        const candidate = candidateRes.rows[0];
-        const jobsRes = await pool.query("SELECT * FROM jobs WHERE status = 'approved'");
-        
-        const matchedJobs = jobsRes.rows.map(job => {
-            let score = 0;
-            let jobSkills = []; try { jobSkills = typeof job.skills_required === 'string' ? JSON.parse(job.skills_required) : (job.skills_required || []); } catch(e){}
-            let candidateSkills = []; try { candidateSkills = typeof candidate.skills === 'string' ? JSON.parse(candidate.skills) : (candidate.skills || []); } catch(e){}
-            
-            if (jobSkills.length > 0) {
-                const matchedSkills = jobSkills.filter(js => candidateSkills.some(cs => cs.toLowerCase() === js.toLowerCase()));
-                score += (matchedSkills.length / jobSkills.length) * 50;
-            } else { score += 50; }
-            
-            let preferredLocs = []; try { preferredLocs = typeof candidate.preferred_locations === 'string' ? JSON.parse(candidate.preferred_locations) : []; } catch(e){}
-            if ((job.location || "").toLowerCase() === (candidate.district || "").toLowerCase() || preferredLocs.some(loc => loc.toLowerCase() === (job.location || "").toLowerCase()) || candidate.willing_to_relocate) score += 20;
-            
-            if (!job.qualification_required || job.qualification_required === "Any Degree" || job.qualification_required === candidate.highest_qualification || candidate.highest_qualification === "PG Degree" || candidate.highest_qualification === "BE/B-Tech") score += 15;
-            
-            let prefRoles = []; try { prefRoles = typeof candidate.preferred_roles === 'string' ? JSON.parse(candidate.preferred_roles) : []; } catch(e){}
-            if (prefRoles.some(role => (job.title || "").toLowerCase().includes(role.toLowerCase()))) score += 15;
-            
-            return { id: job.id, company: job.company_name, title: job.title, type: job.job_type, location: job.location, qualification: job.qualification_required, experience: job.experience_required, salary: job.salary_range, skills: jobSkills, matchScore: Math.round(score) };
-        }).sort((a, b) => b.matchScore - a.matchScore);
-        res.json({ success: true, data: matchedJobs });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/applications/apply', async (req, res) => {
-    try {
-        const checkDuplicate = await pool.query("SELECT * FROM job_applications WHERE job_id = $1 AND candidate_id = $2", [req.body.jobId, req.body.candidateId]);
-        if (checkDuplicate.rows.length > 0) return res.status(400).json({ success: false, message: "You have already applied for this job." });
-        await pool.query("INSERT INTO job_applications (job_id, candidate_id, employer_id, status) VALUES ($1, $2, $3, 'Applied')", [req.body.jobId, req.body.candidateId, req.body.employerId]);
-        res.status(200).json({ success: true, message: "Application submitted successfully!" });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/:id/applications', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
-        const result = await pool.query(`
-            SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, j.event_id, e.name as event_name
-            FROM job_applications ja JOIN jobs j ON ja.job_id = j.id LEFT JOIN events e ON j.event_id = e.id
-            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 ORDER BY ja.applied_at DESC
-        `, [req.params.id, candidateIntId.toString()]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/events/:eventId/jobs', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT * FROM jobs WHERE event_id = $1 AND status = 'approved'", [req.params.eventId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/:id/events', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
-        const result = await pool.query(`
-            SELECT e.*, r.entry_pass_id, r.queue_token, r.attendance_status, r.registered_at FROM events e
-            LEFT JOIN event_candidate_registrations r ON e.id = r.event_id AND (r.candidate_id::text = $1 OR r.candidate_id::text = $2)
-            WHERE (e.status IS NULL OR e.status != 'Deleted') OR r.id IS NOT NULL ORDER BY e.id DESC
-        `, [req.params.id, candidateIntId.toString()]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/events/apply', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate account not found." });
-        const eventCheck = await pool.query("SELECT status FROM events WHERE id = $1", [req.body.eventId]);
-        if (eventCheck.rows.length > 0 && eventCheck.rows[0].status === 'Hold') return res.status(400).json({ success: false, message: "This event is currently on hold." });
-        const duplicateCheck = await pool.query("SELECT id FROM event_candidate_registrations WHERE event_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)", [req.body.eventId, req.body.candidateId, candCheck.rows[0].id.toString()]);
-        if (duplicateCheck.rows.length > 0) return res.status(400).json({ success: false, message: "You have already registered for this event." });
-        
-        const passId = `BCC-evt-${req.body.eventId}-${Date.now().toString().slice(-5)}`;
-        const queueToken = `A-${Math.floor(100 + Math.random() * 900)}`;
-        try {
-            await pool.query("INSERT INTO event_candidate_registrations (event_id, candidate_id, entry_pass_id, queue_token, attendance_status) VALUES ($1, $2, $3, $4, 'Pending')", [req.body.eventId, req.body.candidateId, passId, queueToken]);
-        } catch (insertError) {
-            if (insertError.code === '22P02') await pool.query("INSERT INTO event_candidate_registrations (event_id, candidate_id, entry_pass_id, queue_token, attendance_status) VALUES ($1, $2, $3, $4, 'Pending')", [req.body.eventId, candCheck.rows[0].id, passId, queueToken]);
-            else throw insertError;
-        }
-        res.json({ success: true, message: "Successfully registered!", passId, queueToken });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/:id/interviews', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
-        const result = await pool.query(`
-            SELECT i.id as interview_id, i.interview_type, i.interview_date, i.interview_time, i.location_or_link, i.status as interview_status, ja.id as application_id, j.title as job_title, j.company_name
-            FROM interviews i JOIN job_applications ja ON i.application_id = ja.id JOIN jobs j ON ja.job_id = j.id
-            WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) ORDER BY i.interview_date ASC, i.interview_time ASC
-        `, [req.params.id, candidateIntId.toString()]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.get('/api/candidate/:id/history', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candCheck.rows.length === 0) return res.json({ success: true, data: [] });
-        const result = await pool.query("SELECT * FROM candidate_activity_logs WHERE candidate_id = $1 ORDER BY created_at DESC", [candCheck.rows[0].id]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/candidate/history/log', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("INSERT INTO candidate_activity_logs (candidate_id, action_type, title, description) VALUES ($1, $2, $3, $4)", [candCheck.rows[0].id, req.body.actionType, req.body.title, req.body.description]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.delete('/api/candidate/:id/history', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("DELETE FROM candidate_activity_logs WHERE candidate_id = $1", [candCheck.rows[0].id]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/candidate/feedback', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("INSERT INTO candidate_feedback (candidate_id, overall_rating, registration_exp, interview_quality, event_management, video_url) VALUES ($1, $2, $3, $4, $5, $6)", 
-        [candCheck.rows[0].id, req.body.rating, req.body.registrationExp, req.body.interviewQuality, req.body.eventManagement, req.body.videoUrl]);
-        res.json({ success: true, message: "Feedback submitted successfully!" });
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
@@ -1093,5 +806,5 @@ app.post('/api/candidate/feedback', async (req, res) => {
 // SERVER STARTUP
 // ==========================================
 app.listen(PORT, () => {
-    console.log(`🚀 Backend server is running on http://localhost:${PORT}`);
+    console.log(`🚀 Backend server running on port ${PORT}`);
 });
