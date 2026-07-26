@@ -1053,7 +1053,26 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
         res.status(500).json({ success: false, count: 0 });
     }
 });
+// --- 1-CLICK JOB REACTIVATION ---
+app.put('/api/employer/jobs/:jobId/reactivate', async (req, res) => {
+    const { jobId } = req.params;
+    const { employerId } = req.body;
+    try {
+        const result = await pool.query(
+            "UPDATE jobs SET status = 'approved', created_at = CURRENT_TIMESTAMP WHERE id = $1 AND employer_id = $2 RETURNING id, title",
+            [jobId, employerId]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Job not found or unauthorized." });
+        }
 
+        res.json({ success: true, message: `Job "${result.rows[0].title}" reactivated successfully.` });
+    } catch (error) {
+        console.error("❌ Job Reactivation Error:", error);
+        res.status(500).json({ success: false, message: "Server error reactivating job." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
