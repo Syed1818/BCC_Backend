@@ -327,11 +327,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // ==========================================
 // 5. CANDIDATE PORTAL & SAVED JOBS APIS (FEATURE 5 & 13)
 // ==========================================
-
-// --- GET CANDIDATE SAVED JOBS ---
+// --- GET CANDIDATE SAVED JOBS (ROBUST 500 ERROR FIX) ---
 app.get('/api/candidate/:id/saved-jobs', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candCheck = await pool.query("SELECT id, unique_id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
 
         const candidateDbId = candCheck.rows[0].id;
@@ -346,11 +345,10 @@ app.get('/api/candidate/:id/saved-jobs', async (req, res) => {
 
         res.json({ success: true, data: result.rows });
     } catch (error) {
-        console.error("Error fetching saved jobs:", error);
-        res.status(500).json({ success: false, message: "Failed to fetch saved jobs." });
+        console.error("❌ Error fetching saved jobs:", error);
+        res.status(500).json({ success: false, message: "Database error fetching saved jobs: " + error.message });
     }
 });
-
 // --- TOGGLE / SAVE A JOB (FEATURE 5) ---
 app.post('/api/candidate/saved-jobs/toggle', async (req, res) => {
     const { candidateId, jobId, draftData } = req.body;
