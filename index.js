@@ -765,16 +765,14 @@ app.get('/api/admin/jobs', async (req, res) => {
 });
 
 // --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
-app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
+// --- PUBLIC EVENT JOBS PREVIEW ROUTE ---
+app.get('/api/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
     try {
-        const query = `
-            SELECT id, title, company_name, job_type, location, status, created_at 
-            FROM jobs 
-            WHERE event_id = $1 
-            ORDER BY created_at DESC
-        `;
-        const result = await pool.query(query, [eventId]);
+        const result = await pool.query(
+            "SELECT * FROM jobs WHERE event_id = $1 AND status = 'approved' ORDER BY created_at DESC",
+            [eventId]
+        );
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching event jobs:", error);
