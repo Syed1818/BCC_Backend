@@ -438,6 +438,7 @@ app.get('/api/candidate/:id', async (req, res) => {
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
+
 app.get('/api/candidate/profile/:id', async (req, res) => {
     try {
         const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
@@ -765,6 +766,21 @@ app.get('/api/admin/jobs', async (req, res) => {
 });
 
 // --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
+// --- ADMIN: GET ALL JOBS FOR A SPECIFIC EVENT ---
+app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        const result = await pool.query(
+            "SELECT * FROM jobs WHERE event_id = $1 ORDER BY created_at DESC",
+            [eventId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching admin event jobs:", error);
+        res.status(500).json({ success: false, message: "Server error fetching event jobs" });
+    }
+});
+
 // --- PUBLIC EVENT JOBS PREVIEW ROUTE ---
 app.get('/api/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
@@ -1009,13 +1025,16 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
             return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
+        // Feature 14: Auto-approve if it is tied to an event
+        const initialStatus = event_id ? 'approved' : 'pending';
+
         const insertQuery = `
             INSERT INTO jobs (
                 employer_id, company_name, title, job_type, location, 
                 qualification_required, experience_required, salary_range, 
                 skills_required, vacancies, description, event_id, status
             ) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending') 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
             RETURNING *;
         `;
         
@@ -1023,7 +1042,7 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
             dbEmpId, companyName, title, jobType || 'Full-time', location, 
             qualification, experience, salary, 
             JSON.stringify(skills || []), vacancies || 1, description || '', 
-            event_id || null
+            event_id || null, initialStatus
         ];
 
         const result = await pool.query(insertQuery, values);
