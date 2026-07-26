@@ -174,7 +174,7 @@ app.post('/api/auth/employer/register', async (req, res) => {
 
 // --- MASTER AUTHENTICATION (LOGIN) ---
 app.post('/api/auth/login', async (req, res) => {
-    const { role, password, company_name } = req.body; // Properly extracts company_name
+    const { role, password, company_name } = req.body;
     const emailInput = req.body.email || req.body.identifier || "";
 
     try {
@@ -739,45 +739,6 @@ app.get('/api/admin/jobs', async (req, res) => {
         res.json({ success: true, data: result.rows });
     } catch (error) { res.status(500).json({ success: false }); }
 });
-// --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
-app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
-    const { eventId } = req.params;
-    try {
-        const query = `
-            SELECT j.id, j.title, j.company_name AS company, j.job_type AS type, j.location, j.status AS "approvalStatus", j.created_at AS "postedAt" 
-            FROM jobs j 
-            WHERE j.event_id = $1 
-            ORDER BY j.created_at DESC
-        `;
-        const result = await pool.query(query, [eventId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching event jobs:", error);
-        res.status(500).json({ success: false, message: "Server error fetching event jobs" });
-    }
-});
-
-// --- ADMIN: DEACTIVATE / UPDATE JOB STATUS ---
-app.patch('/api/admin/jobs/:jobId/status', async (req, res) => {
-    const { jobId } = req.params;
-    const { status } = req.body; // e.g., 'inactive', 'approved', 'rejected'
-
-    try {
-        const updatedJob = await pool.query(
-            `UPDATE jobs SET status = $1 WHERE id = $2 RETURNING *`,
-            [status, jobId]
-        );
-
-        if (updatedJob.rowCount === 0) {
-            return res.status(404).json({ success: false, message: "Job not found" });
-        }
-        
-        res.json({ success: true, message: `Job marked as ${status}`, data: updatedJob.rows[0] });
-    } catch (error) {
-        console.error("❌ Error updating job status:", error);
-        res.status(500).json({ success: false, message: "Server error updating job status" });
-    }
-});
 
 app.get('/api/admin/employers', async (req, res) => {
     try {
@@ -810,7 +771,7 @@ app.get('/api/admin/candidates', async (req, res) => {
 
 
 // ==========================================
-// 7. EMPLOYER PORTAL APIS (WITH SMART ID / EMAIL RESOLUTION)
+// 7. EMPLOYER PORTAL APIS (INCLUDING PHASE 2 JOB MANAGEMENT)
 // ==========================================
 app.get('/api/employer/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
@@ -929,55 +890,6 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
-// --- EMPLOYER: POST A NEW JOB (WITH EVENT LINKING) ---
-app.post('/api/employer/:employerId/jobs', async (req, res) => {
-    const { employerId } = req.params;
-    const { title, type, location, qualification, experience, salary, skills, description, event_id } = req.body;
-
-    try {
-        // Smart ID Resolution (supports ID or Email)
-        let dbEmpId = employerId;
-        let companyName = "Unknown Company";
-        
-        const lookup = await pool.query("SELECT id, company_name FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-        if (lookup.rows.length > 0) {
-            dbEmpId = lookup.rows[0].id;
-            companyName = lookup.rows[0].company_name;
-        } else {
-            return res.status(404).json({ success: false, message: "Employer not found." });
-        }
-
-        const insertQuery = `
-            INSERT INTO jobs (
-                employer_id, company_name, title, job_type, location, 
-                qualification_required, experience_required, salary_range, 
-                skills_required, description, event_id, status
-            ) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'approved') 
-            RETURNING *;
-        `;
-        
-        const values = [
-            dbEmpId, 
-            companyName, 
-            title, 
-            type || 'Full-time', 
-            location, 
-            qualification, 
-            experience, 
-            salary, 
-            JSON.stringify(skills || []), 
-            description, 
-            event_id || null // Links to event if provided, otherwise null
-        ];
-
-        const result = await pool.query(insertQuery, values);
-        res.status(201).json({ success: true, message: "Job posted successfully", data: result.rows[0] });
-    } catch (error) {
-        console.error("❌ Error posting job:", error);
-        res.status(500).json({ success: false, message: "Server error posting job." });
-    }
-});
 
 // --- GET CANDIDATES REVIEWED COUNT FOR SPECIFIC EMPLOYER ---
 app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
@@ -998,6 +910,116 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
     } catch (error) {
         console.error("❌ Count Fetch Error:", error);
         res.status(500).json({ success: false, count: 0 });
+    }
+});
+
+// --- PHASE 2: EMPLOYER JOB MANAGEMENT APIS ---
+
+app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        const result = await pool.query(
+            "SELECT * FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", 
+            [dbEmpId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Fetch Jobs Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching jobs." });
+    }
+});
+
+app.post('/api/employer/:employerId/jobs', async (req, res) => {
+    const { employerId } = req.params;
+    const { title, jobType, location, qualification, experience, salary, vacancies, skills, description, event_id } = req.body;
+    
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        const insertQuery = `
+            INSERT INTO jobs (
+                employer_id, title, job_type, location, qualification_required, 
+                experience_required, salary_range, vacancies, skills_required, 
+                description, event_id, status, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', NOW())
+            RETURNING id;
+        `;
+
+        const values = [
+            dbEmpId,
+            title,
+            jobType || 'Full-time',
+            location,
+            qualification || 'Any',
+            experience || 'Fresher',
+            salary || 'Negotiable',
+            parseInt(vacancies) || 1,
+            JSON.stringify(skills || []),
+            description || '',
+            event_id || null
+        ];
+
+        const result = await pool.query(insertQuery, values);
+        res.status(201).json({ success: true, message: "Job posted successfully and sent for admin approval.", jobId: result.rows[0].id });
+    } catch (error) {
+        console.error("❌ Post Job Error:", error);
+        res.status(500).json({ success: false, message: "Database error posting job: " + error.message });
+    }
+});
+
+app.put('/api/employer/jobs/:jobId', async (req, res) => {
+    const { jobId } = req.params;
+    const { title, jobType, location, qualification, experience, salary, vacancies, skills, description, event_id } = req.body;
+    
+    try {
+        const updateQuery = `
+            UPDATE jobs SET 
+                title = $1, job_type = $2, location = $3, qualification_required = $4, 
+                experience_required = $5, salary_range = $6, vacancies = $7, skills_required = $8, 
+                description = $9, event_id = $10, status = 'pending'
+            WHERE id = $11
+        `;
+
+        const values = [
+            title,
+            jobType,
+            location,
+            qualification,
+            experience,
+            salary,
+            parseInt(vacancies) || 1,
+            JSON.stringify(skills || []),
+            description,
+            event_id || null,
+            jobId
+        ];
+
+        await pool.query(updateQuery, values);
+        res.json({ success: true, message: "Job updated and resent for admin approval." });
+    } catch (error) {
+        console.error("❌ Update Job Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating job." });
+    }
+});
+
+app.delete('/api/employer/jobs/:jobId', async (req, res) => {
+    const { jobId } = req.params;
+    try {
+        await pool.query("DELETE FROM jobs WHERE id = $1", [jobId]);
+        res.json({ success: true, message: "Job deleted successfully." });
+    } catch (error) {
+        console.error("❌ Delete Job Error:", error);
+        res.status(500).json({ success: false, message: "Server error deleting job." });
     }
 });
 
