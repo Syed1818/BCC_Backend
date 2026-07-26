@@ -348,11 +348,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 });
 
-
 // --- MARK VENUE ATTENDANCE (CANDIDATE & EMPLOYER) ---
-// --- MARK VENUE ATTENDANCE (CANDIDATE & EMPLOYER) ---
-
-
 app.post('/api/events/attendance/mark', async (req, res) => {
     const { eventId, userId, userType, code } = req.body;
 
@@ -369,15 +365,16 @@ app.post('/api/events/attendance/mark', async (req, res) => {
         let dbUserId = userId;
 
         // 2. Safe Candidate Resolution
-        if (userType === 'candidate' && typeof userId === 'string' && userId.includes('BCC-CAN')) {
-            const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [userId]);
+        if (userType === 'candidate') {
+            const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [userId.toString()]);
             if (candLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate account not found." });
             dbUserId = candLookup.rows[0].id;
         } 
         // 3. Safe Employer Resolution
-        else if (userType === 'employer' && isNaN(userId)) {
-             const empLookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [userId]);
-             if (empLookup.rows.length > 0) dbUserId = empLookup.rows[0].id;
+        else if (userType === 'employer') {
+             const empLookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [userId.toString()]);
+             if (empLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Employer account not found." });
+             dbUserId = empLookup.rows[0].id;
         }
 
         // 4. Prevent Duplicate Check-ins
@@ -386,10 +383,11 @@ app.post('/api/events/attendance/mark', async (req, res) => {
             [eventId, dbUserId, userType]
         );
         if (duplicateCheck.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "You are already checked in to this event." });
+            // Already checked in? Just return success to gracefully unlock the UI!
+            return res.json({ success: true, message: "Already checked in! Event unlocked." });
         }
 
-        // 5. Insert Attendance
+        // 5. Insert Attendance matching DB Schema (checked_in_at)
         await pool.query(
             `INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) 
              VALUES ($1, $2, $3, NOW())`,
@@ -409,9 +407,10 @@ app.post('/api/events/attendance/mark', async (req, res) => {
         res.json({ success: true, message: "Attendance verified! Event unlocked." });
     } catch (error) {
         console.error("❌ Error marking attendance:", error);
-        res.status(500).json({ success: false, message: "Server error: " + error.message });
+        res.status(500).json({ success: false, message: "Server error marking attendance." });
     }
 });
+
 
 // ==========================================
 // 5. CANDIDATE PORTAL & SAVED JOBS APIS
@@ -693,11 +692,8 @@ app.post('/api/candidate/feedback', async (req, res) => {
 // ==========================================
 // 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
-// --- ADMIN: GET LIVE ATTENDANCE HISTORY ---
-// --- ADMIN: GET LIVE ATTENDANCE HISTORY ---
 app.get('/api/admin/attendance-history', async (req, res) => {
     try {
-        // FIXED: Selecting checked_in_at and hardcoding gate/status for the UI
         const query = `
             SELECT 
                 a.id,
@@ -868,7 +864,6 @@ app.get('/api/admin/jobs', async (req, res) => {
 });
 
 // --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
-// --- ADMIN: GET ALL JOBS FOR A SPECIFIC EVENT ---
 app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
     try {
@@ -961,6 +956,8 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) {
                 dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer dashboard not found." });
             }
         }
 
@@ -1001,11 +998,15 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer analytics not found." });
+            }
         }
 
-        const appsRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [dbEmpId]);
-        const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status = 'Hired'", [dbEmpId]);
+        const appsRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1::text", [dbEmpId]);
+        const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1::text AND status = 'Hired'", [dbEmpId]);
         const totalApps = parseInt(appsRes.rows[0].count) || 0;
         const totalHires = parseInt(hiresRes.rows[0].count) || 0;
 
@@ -1014,8 +1015,8 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
                    j.title as job_title, ja.status as action_type, j.event_id, e.name as event_name
             FROM job_applications ja 
             LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id::text = c.id::text
-            JOIN jobs j ON ja.job_id = j.id 
-            LEFT JOIN events e ON j.event_id = e.id
+            JOIN jobs j ON ja.job_id::text = j.id::text 
+            LEFT JOIN events e ON j.event_id::text = e.id::text
             WHERE ja.employer_id::text = $1::text 
             ORDER BY ja.applied_at DESC
         `, [dbEmpId]);
@@ -1044,6 +1045,7 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching analytics: " + error.message });
     }
 });
+
 // --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
@@ -1051,7 +1053,11 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer profile not found." });
+            }
         }
 
         const result = await pool.query(
@@ -1069,6 +1075,7 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
+
 // --- GET EMPLOYER EVENT STALL APPLICATIONS ---
 app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
@@ -1076,7 +1083,11 @@ app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                 return res.status(404).json({ success: false, message: "Employer event stalls not found." });
+            }
         }
 
         const result = await pool.query(
@@ -1090,7 +1101,6 @@ app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
     }
 });
 
-
 // ==========================================
 // 8. EMPLOYER JOBS MANAGEMENT
 // ==========================================
@@ -1100,8 +1110,14 @@ app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-        if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer jobs not found." });
+            }
+        }
 
         const result = await pool.query("SELECT * FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [dbEmpId]);
         res.json({ success: true, data: result.rows });
@@ -1201,7 +1217,11 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, count: 0 });
+            }
         }
 
         const countRes = await pool.query(
