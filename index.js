@@ -45,7 +45,6 @@ app.get('/api/health', async (req, res) => {
 app.post('/api/auth/candidate/register', async (req, res) => {
     const data = req.body;
     try {
-        // 1. Required Fields Check
         if (!data.fullName || (!data.email && !data.phone)) {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
@@ -53,7 +52,6 @@ app.post('/api/auth/candidate/register', async (req, res) => {
         const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
         const cleanPhone = data.phone ? data.phone.replace(/\D/g, "").trim() : null;
 
-        // 2. Strict Email Format Validation
         if (cleanEmail) {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             if (!emailRegex.test(cleanEmail)) {
@@ -61,7 +59,6 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             }
         }
 
-        // 3. Duplicate Account Prevention
         const userExists = await pool.query(
             "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
             [cleanEmail, cleanPhone]
@@ -71,7 +68,6 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
-        // 4. Safe Date Parsing & Minimum Age 15+ Enforcement
         let parsedDob = null;
         if (data.dob && typeof data.dob === 'string' && data.dob.trim() !== '' && !isNaN(Date.parse(data.dob))) {
             parsedDob = new Date(data.dob);
@@ -81,7 +77,6 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             }
         }
 
-        // 5. Resume File Format Check (.pdf, .doc, .docx only)
         if (data.resumeFileName) {
             const ext = data.resumeFileName.split('.').pop().toLowerCase();
             if (!['pdf', 'doc', 'docx'].includes(ext)) {
@@ -154,7 +149,7 @@ app.post('/api/auth/candidate/register', async (req, res) => {
 });
 
 // ==========================================
-// MASTER AUTHENTICATION (LOGIN API)
+// 5. MASTER AUTHENTICATION (LOGIN API) - FIXED
 // ==========================================
 app.post('/api/auth/login', async (req, res) => {
     const { role, email, password } = req.body;
@@ -162,21 +157,24 @@ app.post('/api/auth/login', async (req, res) => {
     try {
         const rawInput = email ? email.trim() : "";
         const digitsOnly = rawInput.replace(/\D/g, "");
-        // Extract last 10 digits for flexible mobile lookup
         const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
+        console.log(`🔍 LOGIN TRY: Input = "${rawInput}", Digits = "${last10Digits}"`);
+
         if (role === 'candidate' || !role) {
-            // Flexible SQL Query: Checks Email, Unique Candidate ID, and Phone (with or without +91)
-            const candResult = await pool.query(
-                `SELECT * FROM candidates 
-                 WHERE LOWER(email) = LOWER($1) 
-                    OR LOWER(unique_id) = LOWER($1)
-                    OR phone = $1
-                    OR ($2 != '' AND RIGHT(regexp_replace(phone, '\\D', '', 'g'), 10) = $2)`,
-                [rawInput, last10Digits]
-            );
+            // FIXED POSTGRESQL REGEX ([^0-9] avoids JS escape bugs)
+            const queryText = `
+                SELECT * FROM candidates 
+                WHERE LOWER(TRIM(email)) = LOWER($1) 
+                   OR LOWER(TRIM(unique_id)) = LOWER($1)
+                   OR TRIM(phone) = $1
+                   OR ($2 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $2)
+            `;
+
+            const candResult = await pool.query(queryText, [rawInput, last10Digits]);
 
             if (candResult.rows.length === 0) {
+                console.log("❌ LOGIN FAILED: User not found in DB");
                 return res.status(401).json({ 
                     success: false, 
                     message: 'Candidate account not found. Please check your Email, Mobile Number, or Candidate ID.' 
@@ -192,7 +190,7 @@ app.post('/api/auth/login', async (req, res) => {
                 });
             }
 
-            // Verify Password (BCrypt hash or Plain text)
+            // Verify Password
             let isMatch = false;
             const inputPassword = password ? password.trim() : "";
             
@@ -203,13 +201,14 @@ app.post('/api/auth/login', async (req, res) => {
             }
 
             if (!isMatch) {
+                console.log(`❌ LOGIN FAILED: Password mismatch for ${candidate.full_name}`);
                 return res.status(401).json({ 
                     success: false, 
                     message: 'Invalid Password. Please try again.' 
                 });
             }
 
-            console.log(`🔑 Successful Login: ${candidate.full_name} (${candidate.unique_id})`);
+            console.log(`🔑 LOGIN SUCCESS: ${candidate.full_name} (${candidate.unique_id})`);
             return res.json({ 
                 success: true, 
                 data: { 
@@ -225,10 +224,11 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid role selected.' });
     } catch (error) {
         console.error("❌ Login Server Error:", error);
-        return res.status(500).json({ success: false, message: "Server error during login." });
+        return res.status(500).json({ success: false, message: "Server Error: " + error.message });
     }
 });
+
 // Start Express Server
 app.listen(PORT, () => {
-    console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+    console.log(`🚀 Backend server running on port ${PORT}`);
 });
