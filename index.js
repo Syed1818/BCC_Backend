@@ -741,42 +741,34 @@ app.get('/api/admin/jobs', async (req, res) => {
 });
 
 // --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
+app.get('/api/admin/jobs', async (req, res) => {
+    try {
+        // FIX: Removed the AS aliases so it sends company_name, job_type, status, and created_at exactly as they are in the DB.
+        const result = await pool.query(`
+            SELECT id, title, company_name, job_type, location, status, created_at 
+            FROM jobs 
+            ORDER BY created_at DESC
+        `);
+        res.json({ success: true, data: result.rows });
+    } catch (error) { res.status(500).json({ success: false }); }
+});
+
+// --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
 app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
     try {
+        // FIX: Removed aliases here as well
         const query = `
-            SELECT j.id, j.title, j.company_name AS company, j.job_type AS type, j.location, j.status AS "approvalStatus", j.created_at AS "postedAt" 
-            FROM jobs j 
-            WHERE j.event_id = $1 
-            ORDER BY j.created_at DESC
+            SELECT id, title, company_name, job_type, location, status, created_at 
+            FROM jobs 
+            WHERE event_id = $1 
+            ORDER BY created_at DESC
         `;
         const result = await pool.query(query, [eventId]);
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching event jobs:", error);
         res.status(500).json({ success: false, message: "Server error fetching event jobs" });
-    }
-});
-
-// --- ADMIN: DEACTIVATE / UPDATE JOB STATUS ---
-app.put('/api/admin/jobs/:jobId/status', async (req, res) => {
-    const { jobId } = req.params;
-    const { status } = req.body; // e.g., 'inactive', 'approved', 'rejected'
-
-    try {
-        const updatedJob = await pool.query(
-            `UPDATE jobs SET status = $1 WHERE id = $2 RETURNING *`,
-            [status, jobId]
-        );
-
-        if (updatedJob.rowCount === 0) {
-            return res.status(404).json({ success: false, message: "Job not found" });
-        }
-        
-        res.json({ success: true, message: `Job marked as ${status}`, data: updatedJob.rows[0] });
-    } catch (error) {
-        console.error("❌ Error updating job status:", error);
-        res.status(500).json({ success: false, message: "Server error updating job status" });
     }
 });
 
