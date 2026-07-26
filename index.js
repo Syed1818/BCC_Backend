@@ -414,13 +414,30 @@ app.delete('/api/candidate/saved-jobs/:savedId', async (req, res) => {
 
 app.get('/api/candidate/:id', async (req, res) => {
     try {
-        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const result = await pool.query(
+            "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
+            [req.params.id]
+        );
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found" });
+        
         const dbUser = result.rows[0];
-        res.status(200).json({ success: true, data: { uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, qualification: dbUser.highest_qualification || "N/A", experienceType: dbUser.experience_type || "Fresher", skills: dbUser.skills || [], completion: 95 } });
-    } catch (error) { res.status(500).json({ success: false }); }
+        res.status(200).json({ 
+            success: true, 
+            data: { 
+                uniqueId: dbUser.unique_id, 
+                fullName: dbUser.full_name, 
+                email: dbUser.email, 
+                phone: dbUser.phone, 
+                qualification: dbUser.highest_qualification || "N/A", 
+                experienceType: dbUser.experience_type || "Fresher", 
+                skills: typeof dbUser.skills === 'string' ? JSON.parse(dbUser.skills) : (dbUser.skills || []), 
+                completion: 95 
+            } 
+        });
+    } catch (error) { 
+        res.status(500).json({ success: false, message: error.message }); 
+    }
 });
-
 app.get('/api/candidate/profile/:id', async (req, res) => {
     try {
         const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
