@@ -926,7 +926,6 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching analytics." });
     }
 });
-
 // --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
