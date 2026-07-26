@@ -23,12 +23,24 @@ const pool = new Pool({
 });
 
 pool.connect((err) => {
-    if (err) console.error('Database connection error:', err.stack);
-    else console.log('Successfully connected to the PostgreSQL database.');
+    if (err) console.error('❌ Database connection error:', err.stack);
+    else console.log('✅ Successfully connected to the PostgreSQL database.');
 });
 
 // ==========================================
-// 3. CANDIDATE REGISTRATION API
+// 3. HEALTH CHECK ROUTE
+// ==========================================
+app.get('/api/health', async (req, res) => {
+    try {
+        await pool.query('SELECT 1');
+        res.json({ status: "online", db: "connected", timestamp: new Date() });
+    } catch (err) {
+        res.status(500).json({ status: "online", db: "error", error: err.message });
+    }
+});
+
+// ==========================================
+// 4. CANDIDATE REGISTRATION API
 // ==========================================
 app.post('/api/auth/candidate/register', async (req, res) => {
     const data = req.body;
@@ -38,27 +50,30 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // 2. Strict Email Format Validation (Feature 7)
-        if (data.email) {
+        const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
+        const cleanPhone = data.phone ? data.phone.replace(/\D/g, "").trim() : null;
+
+        // 2. Strict Email Format Validation
+        if (cleanEmail) {
             const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-            if (!emailRegex.test(data.email.trim())) {
+            if (!emailRegex.test(cleanEmail)) {
                 return res.status(400).json({ success: false, message: "Invalid email address format." });
             }
         }
 
-        // 3. Duplicate Account Prevention (Feature 3)
+        // 3. Duplicate Account Prevention
         const userExists = await pool.query(
-            "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER($1)) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
-            [data.email ? data.email.trim() : null, data.phone ? data.phone.trim() : null]
+            "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
+            [cleanEmail, cleanPhone]
         );
 
         if (userExists.rows.length > 0) {
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
-        // 4. Safe Date Parsing & Minimum Age 15+ Enforcement (Feature 1)
+        // 4. Safe Date Parsing & Minimum Age 15+ Enforcement
         let parsedDob = null;
-        if (data.dob && !isNaN(Date.parse(data.dob))) {
+        if (data.dob && typeof data.dob === 'string' && data.dob.trim() !== '' && !isNaN(Date.parse(data.dob))) {
             parsedDob = new Date(data.dob);
             const ageDiff = new Date().getFullYear() - parsedDob.getFullYear();
             if (ageDiff < 15) {
@@ -66,7 +81,7 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             }
         }
 
-        // 5. Resume File Format Check (.pdf, .doc, .docx only) (Feature 4)
+        // 5. Resume File Format Check (.pdf, .doc, .docx only)
         if (data.resumeFileName) {
             const ext = data.resumeFileName.split('.').pop().toLowerCase();
             if (!['pdf', 'doc', 'docx'].includes(ext)) {
@@ -91,9 +106,9 @@ app.post('/api/auth/candidate/register', async (req, res) => {
 
         const values = [
             unique_id,
-            data.fullName.trim(),
-            data.email ? data.email.trim() : null,
-            data.phone ? data.phone.trim() : null,
+            data.fullName ? data.fullName.trim() : "",
+            cleanEmail,
+            cleanPhone,
             data.password || "BccPass@123",
             parsedDob,
             data.gender || null,
@@ -130,24 +145,37 @@ app.post('/api/auth/candidate/register', async (req, res) => {
         ];
 
         const result = await pool.query(insertQuery, values);
+        console.log(`✅ Candidate registered: ${result.rows[0].unique_id}`);
         res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
     } catch (error) {
-        console.error("Candidate Register DB Error:", error);
+        console.error("❌ Candidate Register DB Error:", error);
         res.status(500).json({ success: false, message: "Database Error: " + (error.detail || error.message || "Server error during registration.") });
     }
 });
 
 // ==========================================
-// 4. MASTER AUTHENTICATION (LOGIN)
+// 5. MASTER AUTHENTICATION (LOGIN API)
 // ==========================================
 app.post('/api/auth/login', async (req, res) => {
     const { role, email, password } = req.body;
 
     try {
-        if (role === 'candidate') {
-            const candResult = await pool.query("SELECT * FROM candidates WHERE email = $1 OR unique_id = $1", [email]);
+        const inputIdentifier = email ? email.trim() : "";
+        const cleanPhone = inputIdentifier.replace(/\D/g, "");
+
+        if (role === 'candidate' || !role) {
+            // Allows login via Email, Phone Number, or Unique Candidate ID
+            const candResult = await pool.query(
+                `SELECT * FROM candidates 
+                 WHERE LOWER(email) = LOWER($1) 
+                    OR phone = $1 
+                    OR (phone IS NOT NULL AND $2 != '' AND phone = $2)
+                    OR LOWER(unique_id) = LOWER($1)`,
+                [inputIdentifier, cleanPhone]
+            );
+
             if (candResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Candidate account not found.' });
+                return res.status(401).json({ success: false, message: 'Candidate account not found. Please check your Email, Mobile Number, or Candidate ID.' });
             }
 
             const candidate = candResult.rows[0];
@@ -156,27 +184,41 @@ app.post('/api/auth/login', async (req, res) => {
                 return res.status(403).json({ success: false, message: 'Your candidate account has been blocked by administrators.' });
             }
 
+            // Verify Password (BCrypt or Plain Text match)
             let isMatch = false;
+            const inputPassword = password ? password.trim() : "";
+            
             if (candidate.password && candidate.password.startsWith('$2')) {
-                isMatch = await bcrypt.compare(password, candidate.password);
+                isMatch = await bcrypt.compare(inputPassword, candidate.password);
             } else {
-                isMatch = (password === candidate.password);
+                isMatch = (inputPassword === candidate.password);
             }
 
-            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: 'Invalid Password. Please try again.' });
+            }
 
+            console.log(`🔑 Successful Candidate Login: ${candidate.full_name} (${candidate.unique_id})`);
             return res.json({ 
                 success: true, 
-                data: { id: candidate.unique_id, name: candidate.full_name, email: candidate.email, role: 'candidate' } 
+                data: { 
+                    id: candidate.unique_id, 
+                    name: candidate.full_name, 
+                    email: candidate.email, 
+                    phone: candidate.phone,
+                    role: 'candidate' 
+                } 
             });
         }
 
-        res.status(400).json({ success: false, message: 'Invalid role selected.' });
+        return res.status(400).json({ success: false, message: 'Invalid role selected.' });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error during login." });
+        console.error("❌ Login Server Error:", error);
+        return res.status(500).json({ success: false, message: "Server error during login." });
     }
 });
 
+// Start Express Server
 app.listen(PORT, () => {
-    console.log(`Backend server running on http://localhost:${PORT}`);
+    console.log(`🚀 Backend server running on http://localhost:${PORT}`);
 });
