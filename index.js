@@ -199,8 +199,15 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-        if (role === 'employer') {
-            const empResult = await pool.query("SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+     if (role === 'employer') {
+            const cleanInput = rawInput.toLowerCase();
+            const cleanCompany = companyName ? companyName.trim().toLowerCase() : cleanInput;
+
+            const empResult = await pool.query(
+                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
+                [cleanInput, cleanCompany]
+            );
+
             if (empResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Employer account not found.' });
 
             const employer = empResult.rows[0];
