@@ -347,10 +347,19 @@ app.post('/api/auth/reset-password', async (req, res) => {
         return res.status(500).json({ success: false, message: "Database error updating password." });
     }
 });
+
+
 // --- MARK VENUE ATTENDANCE (CANDIDATE & EMPLOYER) ---
 // --- MARK VENUE ATTENDANCE (CANDIDATE & EMPLOYER) ---
+
+
 app.post('/api/events/attendance/mark', async (req, res) => {
     const { eventId, userId, userType, code } = req.body;
+
+    // 1. Strict Null Checks
+    if (!eventId || !userId) {
+        return res.status(400).json({ success: false, message: "Missing eventId or userId in request." });
+    }
 
     if (code !== '1234' && code !== '123456') {
         return res.status(400).json({ success: false, message: "Invalid verification code." });
@@ -359,23 +368,35 @@ app.post('/api/events/attendance/mark', async (req, res) => {
     try {
         let dbUserId = userId;
 
-        if (userType === 'candidate' && (userId.toString().includes('BCC-CAN') || isNaN(userId))) {
+        // 2. Safe Candidate Resolution
+        if (userType === 'candidate' && typeof userId === 'string' && userId.includes('BCC-CAN')) {
             const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [userId]);
-            if (candLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+            if (candLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate account not found." });
             dbUserId = candLookup.rows[0].id;
         } 
+        // 3. Safe Employer Resolution
         else if (userType === 'employer' && isNaN(userId)) {
              const empLookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [userId]);
              if (empLookup.rows.length > 0) dbUserId = empLookup.rows[0].id;
         }
 
-        // FIXED: Matched exact DB schema (checked_in_at instead of created_at)
+        // 4. Prevent Duplicate Check-ins
+        const duplicateCheck = await pool.query(
+            "SELECT id FROM event_attendance WHERE event_id = $1 AND user_id = $2 AND user_type = $3", 
+            [eventId, dbUserId, userType]
+        );
+        if (duplicateCheck.rows.length > 0) {
+            return res.status(400).json({ success: false, message: "You are already checked in to this event." });
+        }
+
+        // 5. Insert Attendance
         await pool.query(
             `INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) 
              VALUES ($1, $2, $3, NOW())`,
             [eventId, dbUserId, userType]
         );
 
+        // 6. Update Registration Status (Unlocks Jobs)
         if (userType === 'candidate') {
             await pool.query(
                 `UPDATE event_candidate_registrations 
@@ -388,7 +409,7 @@ app.post('/api/events/attendance/mark', async (req, res) => {
         res.json({ success: true, message: "Attendance verified! Event unlocked." });
     } catch (error) {
         console.error("❌ Error marking attendance:", error);
-        res.status(500).json({ success: false, message: "Server error marking attendance." });
+        res.status(500).json({ success: false, message: "Server error: " + error.message });
     }
 });
 
