@@ -174,7 +174,7 @@ app.post('/api/auth/employer/register', async (req, res) => {
 
 // --- MASTER AUTHENTICATION (LOGIN) ---
 app.post('/api/auth/login', async (req, res) => {
-    const { role, password } = req.body;
+    const { role, password, company_name } = req.body;
     const emailInput = req.body.email || req.body.identifier || "";
 
     try {
@@ -199,34 +199,20 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-if (role === 'employer') {
-            const companyNameInput = req.body.company_name ? req.body.company_name.trim() : "";
+        if (role === 'employer') {
+            const cleanInput = rawInput.toLowerCase();
+            const cleanCompany = company_name ? company_name.trim().toLowerCase() : cleanInput;
 
-            // STEP 1: Search by Work Email FIRST
             const empResult = await pool.query(
-                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", 
-                [rawInput]
+                "SELECT * FROM employers WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
+                [cleanInput, cleanCompany]
             );
 
-            // If email is not found, the registration didn't save
             if (empResult.rows.length === 0) {
-                return res.status(401).json({ 
-                    success: false, 
-                    message: 'No registered employer account found with this Work Email.' 
-                });
+                return res.status(401).json({ success: false, message: 'Employer account not found.' });
             }
 
             const employer = empResult.rows[0];
-
-            // STEP 2: Verify Company Name matches the registered record
-            if (companyNameInput && employer.company_name.trim().toLowerCase() !== companyNameInput.toLowerCase()) {
-                return res.status(401).json({ 
-                    success: false, 
-                    message: `Company Name mismatch! Registered name in DB is: "${employer.company_name}"` 
-                });
-            }
-
-            // STEP 3: Verify Account Approval Status[cite: 2]
             const currentStatus = (employer.status || 'pending').toLowerCase().trim();
 
             if (currentStatus === 'pending') {
@@ -239,18 +225,22 @@ if (role === 'employer') {
                 return res.status(403).json({ success: false, message: 'Account not approved for login.' });
             }
 
-            // STEP 4: Verify Password[cite: 2]
             let isMatch = employer.password && employer.password.startsWith('$2') 
                 ? await bcrypt.compare(password, employer.password) 
-                : (password === employer.password);
+                : (password === employer.password || password === employer.password_hash);
 
             if (!isMatch) {
-                return res.status(401).json({ success: false, message: 'Incorrect password.' });
+                return res.status(401).json({ success: false, message: 'Invalid Password.' });
             }
 
             return res.json({ 
                 success: true, 
-                data: { id: employer.id, name: employer.company_name, email: employer.email, role: 'employer' } 
+                data: { 
+                    id: employer.id, 
+                    name: employer.company_name, 
+                    email: employer.email, 
+                    role: 'employer' 
+                } 
             });
         }
 
@@ -360,7 +350,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
 
 // ==========================================
-// 5. CANDIDATE PORTAL & SAVED JOBS APIS (FEATURE 5 & 13)
+// 5. CANDIDATE PORTAL & SAVED JOBS APIS
 // ==========================================
 app.get('/api/candidate/:id/saved-jobs', async (req, res) => {
     try {
@@ -857,6 +847,7 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching analytics." });
     }
 });
+
 // --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
@@ -892,6 +883,7 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
         res.status(500).json({ success: false, count: 0 });
     }
 });
+
 // ==========================================
 // SERVER STARTUP
 // ==========================================
