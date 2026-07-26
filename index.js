@@ -27,30 +27,50 @@ pool.connect((err) => {
     else console.log('Successfully connected to the PostgreSQL database.');
 });
 
-// ==========================================
-// 3. CANDIDATE REGISTRATION API
-// ==========================================
+
+
 app.post('/api/auth/candidate/register', async (req, res) => {
     const data = req.body;
     try {
+        // 1. Required Fields Check
         if (!data.fullName || (!data.email && !data.phone)) {
-            return res.status(400).json({ success: false, message: "Full Name and Email/Phone are required." });
+            return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // Check for duplicates
+        // 2. Strict Email & Phone Format Validation (Feature 7)
+        if (data.email) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(data.email.trim())) {
+                return res.status(400).json({ success: false, message: "Invalid email address format." });
+            }
+        }
+
+        // 3. Duplicate Account Prevention (Feature 3)
         const userExists = await pool.query(
-            "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND email = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
-            [data.email || null, data.phone || null]
+            "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER($1)) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
+            [data.email ? data.email.trim() : null, data.phone ? data.phone.trim() : null]
         );
 
         if (userExists.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number already exists!" });
+            return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
-        // Safe Date Parsing
+        // 4. Safe Date Parsing & Minimum Age 15+ Enforcement (Feature 1)
         let parsedDob = null;
         if (data.dob && !isNaN(Date.parse(data.dob))) {
             parsedDob = new Date(data.dob);
+            const ageDiff = new Date().getFullYear() - parsedDob.getFullYear();
+            if (ageDiff < 15) {
+                return res.status(400).json({ success: false, message: "You must be at least 15 years old to register." });
+            }
+        }
+
+        // 5. Resume File Format Check (.pdf, .doc, .docx only) (Feature 4)
+        if (data.resumeFileName) {
+            const ext = data.resumeFileName.split('.').pop().toLowerCase();
+            if (!['pdf', 'doc', 'docx'].includes(ext)) {
+                return res.status(400).json({ success: false, message: "Only PDF and Word documents (.pdf, .doc, .docx) are allowed." });
+            }
         }
 
         const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
@@ -70,9 +90,9 @@ app.post('/api/auth/candidate/register', async (req, res) => {
 
         const values = [
             unique_id,
-            data.fullName,
-            data.email || null,
-            data.phone || null,
+            data.fullName.trim(),
+            data.email ? data.email.trim() : null,
+            data.phone ? data.phone.trim() : null,
             data.password || "BccPass@123",
             parsedDob,
             data.gender || null,
@@ -115,7 +135,6 @@ app.post('/api/auth/candidate/register', async (req, res) => {
         res.status(500).json({ success: false, message: "Database Error: " + (error.detail || error.message || "Server error during registration.") });
     }
 });
-
 // ==========================================
 // 4. MASTER AUTHENTICATION (LOGIN)
 // ==========================================
