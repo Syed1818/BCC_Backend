@@ -557,21 +557,6 @@ app.post('/api/events/apply', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// --- PUBLIC EVENT JOBS PREVIEW ROUTE ---
-app.get('/api/events/:eventId/jobs', async (req, res) => {
-    const { eventId } = req.params;
-    try {
-        const result = await pool.query(
-            "SELECT * FROM jobs WHERE event_id = $1 AND status = 'approved' ORDER BY created_at DESC",
-            [eventId]
-        );
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching event jobs:", error);
-        res.status(500).json({ success: false, message: "Server error fetching event jobs" });
-    }
-});
-
 app.get('/api/candidate/:id/interviews', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
@@ -748,11 +733,58 @@ app.get('/api/admin/stall-applications', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// --- ADMIN JOB APPROVAL APIS ---
 app.get('/api/admin/jobs', async (req, res) => {
     try {
-        const result = await pool.query(`SELECT id, title, company_name AS company, job_type AS type, location, status AS "approvalStatus", created_at AS "postedAt" FROM jobs ORDER BY created_at DESC`);
+        const result = await pool.query(`
+            SELECT id, title, company_name, job_type, location, status, created_at 
+            FROM jobs 
+            ORDER BY created_at DESC
+        `);
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        res.status(500).json({ success: false }); 
+    }
+});
+
+// --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
+app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        const query = `
+            SELECT id, title, company_name, job_type, location, status, created_at 
+            FROM jobs 
+            WHERE event_id = $1 
+            ORDER BY created_at DESC
+        `;
+        const result = await pool.query(query, [eventId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching event jobs:", error);
+        res.status(500).json({ success: false, message: "Server error fetching event jobs" });
+    }
+});
+
+// --- ADMIN: APPROVE / REJECT / UPDATE JOB STATUS ---
+app.put('/api/admin/jobs/:jobId/status', async (req, res) => {
+    const { jobId } = req.params;
+    const { status } = req.body; 
+
+    try {
+        const updatedJob = await pool.query(
+            `UPDATE jobs SET status = $1 WHERE id = $2 RETURNING *`,
+            [status, jobId]
+        );
+
+        if (updatedJob.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "Job not found" });
+        }
+        
+        res.json({ success: true, message: `Job marked as ${status}`, data: updatedJob.rows[0] });
+    } catch (error) {
+        console.error("❌ Error updating job status:", error);
+        res.status(500).json({ success: false, message: "Server error updating job status" });
+    }
 });
 
 app.get('/api/admin/employers', async (req, res) => {
@@ -906,58 +938,6 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
     }
 });
 
-// --- GET EMPLOYER EVENT STALL APPLICATIONS ---
-app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
-    const { employerId } = req.params;
-    try {
-        let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
-        }
-
-        const result = await pool.query(
-            "SELECT id, event_id as \"eventId\", status, payment_status as \"paymentStatus\", applied_at as \"appliedAt\" FROM employer_event_stalls WHERE employer_id = $1",
-            [dbEmpId]
-        );
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching employer event stalls:", error);
-        res.status(500).json({ success: false, message: "Server error fetching event stalls." });
-    }
-});
-
-// --- APPLY FOR EMPLOYER EVENT STALL ---
-app.post('/api/employer/event-stalls/apply', async (req, res) => {
-    const { employerId, eventId } = req.body;
-    try {
-        let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
-        }
-
-        // Check duplicate application
-        const duplicate = await pool.query(
-            "SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2",
-            [dbEmpId, eventId]
-        );
-        if (duplicate.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
-        }
-
-        await pool.query(
-            "INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) VALUES ($1, $2, 'pending', 'pending', NOW())",
-            [dbEmpId, eventId]
-        );
-
-        res.json({ success: true, message: "Stall application submitted successfully." });
-    } catch (error) {
-        console.error("❌ Error applying for stall:", error);
-        res.status(500).json({ success: false, message: "Server error applying for stall." });
-    }
-});
-
 
 // ==========================================
 // 8. EMPLOYER JOBS MANAGEMENT
@@ -995,25 +975,13 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
             return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // If an event_id is attached, check if the employer's stall is approved for that event
-        let jobStatus = 'pending';
-        if (event_id) {
-            const stallCheck = await pool.query(
-                "SELECT status FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2 AND status = 'approved'",
-                [dbEmpId, event_id]
-            );
-            if (stallCheck.rows.length > 0) {
-                jobStatus = 'approved'; // Feature 14: Auto-approve event jobs if stall is approved
-            }
-        }
-
         const insertQuery = `
             INSERT INTO jobs (
                 employer_id, company_name, title, job_type, location, 
                 qualification_required, experience_required, salary_range, 
                 skills_required, vacancies, description, event_id, status
             ) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending') 
             RETURNING *;
         `;
         
@@ -1021,7 +989,7 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
             dbEmpId, companyName, title, jobType || 'Full-time', location, 
             qualification, experience, salary, 
             JSON.stringify(skills || []), vacancies || 1, description || '', 
-            event_id || null, jobStatus
+            event_id || null
         ];
 
         const result = await pool.query(insertQuery, values);
