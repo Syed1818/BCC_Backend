@@ -929,6 +929,55 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
+// --- EMPLOYER: POST A NEW JOB (WITH EVENT LINKING) ---
+app.post('/api/employer/:employerId/jobs', async (req, res) => {
+    const { employerId } = req.params;
+    const { title, type, location, qualification, experience, salary, skills, description, event_id } = req.body;
+
+    try {
+        // Smart ID Resolution (supports ID or Email)
+        let dbEmpId = employerId;
+        let companyName = "Unknown Company";
+        
+        const lookup = await pool.query("SELECT id, company_name FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (lookup.rows.length > 0) {
+            dbEmpId = lookup.rows[0].id;
+            companyName = lookup.rows[0].company_name;
+        } else {
+            return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        const insertQuery = `
+            INSERT INTO jobs (
+                employer_id, company_name, title, job_type, location, 
+                qualification_required, experience_required, salary_range, 
+                skills_required, description, event_id, status
+            ) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'approved') 
+            RETURNING *;
+        `;
+        
+        const values = [
+            dbEmpId, 
+            companyName, 
+            title, 
+            type || 'Full-time', 
+            location, 
+            qualification, 
+            experience, 
+            salary, 
+            JSON.stringify(skills || []), 
+            description, 
+            event_id || null // Links to event if provided, otherwise null
+        ];
+
+        const result = await pool.query(insertQuery, values);
+        res.status(201).json({ success: true, message: "Job posted successfully", data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error posting job:", error);
+        res.status(500).json({ success: false, message: "Server error posting job." });
+    }
+});
 
 // --- GET CANDIDATES REVIEWED COUNT FOR SPECIFIC EMPLOYER ---
 app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
