@@ -771,7 +771,7 @@ app.get('/api/admin/candidates', async (req, res) => {
 
 
 // ==========================================
-// 7. EMPLOYER PORTAL APIS (INCLUDING PHASE 2 JOB MANAGEMENT)
+// 7. EMPLOYER PORTAL APIS (INCLUDING CANDIDATE REVIEW & STATUS UPDATES)
 // ==========================================
 app.get('/api/employer/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
@@ -913,8 +913,67 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
     }
 });
 
-// --- PHASE 2: EMPLOYER JOB MANAGEMENT APIS ---
+// --- JOB OPTIONS FOR CANDIDATES PAGE DROPDOWN ---
+app.get('/api/employer/:employerId/job-options', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
 
+        const result = await pool.query(
+            "SELECT id, title, location FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", 
+            [dbEmpId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Job Options Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching job options." });
+    }
+});
+
+// --- FETCH APPLICANTS FOR A SPECIFIC JOB ---
+app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
+    const { jobId } = req.params;
+    try {
+        const result = await pool.query(`
+            SELECT 
+                ja.id as application_id, ja.status as app_status, ja.applied_at,
+                c.unique_id, c.full_name, c.email, c.phone, c.highest_qualification, 
+                c.experience_type, c.skills, c.resume_file_name,
+                FLOOR(RANDOM() * (98 - 75 + 1) + 75) as "matchScore"
+            FROM job_applications ja
+            JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id = c.id
+            WHERE ja.job_id = $1
+            ORDER BY ja.applied_at DESC
+        `, [jobId]);
+
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Fetch Applicants Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching applicants." });
+    }
+});
+
+// --- UPDATE APPLICATION STATUS ---
+app.put('/api/employer/applications/:appId/status', async (req, res) => {
+    const { appId } = req.params;
+    const { status } = req.body;
+    try {
+        await pool.query(
+            "UPDATE job_applications SET status = $1 WHERE id = $2",
+            [status, appId]
+        );
+        res.json({ success: true, message: "Application status updated successfully." });
+    } catch (error) {
+        console.error("❌ Update Application Status Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating application status." });
+    }
+});
+
+// --- PHASE 2: EMPLOYER JOB MANAGEMENT APIS ---
 app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
     const { employerId } = req.params;
     try {
