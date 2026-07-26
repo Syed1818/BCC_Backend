@@ -174,7 +174,7 @@ app.post('/api/auth/employer/register', async (req, res) => {
 
 // --- MASTER AUTHENTICATION (LOGIN) ---
 app.post('/api/auth/login', async (req, res) => {
-    const { role, password, company_name } = req.body;
+    const { role, password, company_name } = req.body; // Properly extracts company_name
     const emailInput = req.body.email || req.body.identifier || "";
 
     try {
@@ -201,7 +201,7 @@ app.post('/api/auth/login', async (req, res) => {
 
         if (role === 'employer') {
             const cleanInput = rawInput.toLowerCase();
-            const cleanCompany = company_name ? company_name.trim().toLowerCase() : cleanInput;
+            const cleanCompany = company_name ? company_name.trim().toLowerCase() : "";
 
             const empResult = await pool.query(
                 "SELECT * FROM employers WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
@@ -771,17 +771,25 @@ app.get('/api/admin/candidates', async (req, res) => {
 
 
 // ==========================================
-// 7. EMPLOYER PORTAL APIS
+// 7. EMPLOYER PORTAL APIS (WITH SMART ID / EMAIL RESOLUTION)
 // ==========================================
 app.get('/api/employer/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
     try {
-        const activeJobs = await pool.query("SELECT COUNT(*) FROM jobs WHERE employer_id = $1 AND status = 'approved'", [employerId]);
-        const totalApps = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [employerId]);
-        const interviews = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Interview', 'Interviewed', 'Interview Scheduled')", [employerId]);
-        const offers = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Offered', 'Hired')", [employerId]);
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            }
+        }
 
-        const funnelRes = await pool.query("SELECT status, COUNT(*) as count FROM job_applications WHERE employer_id = $1 GROUP BY status", [employerId]);
+        const activeJobs = await pool.query("SELECT COUNT(*) FROM jobs WHERE employer_id = $1 AND status = 'approved'", [dbEmpId]);
+        const totalApps = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [dbEmpId]);
+        const interviews = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Interview', 'Interviewed', 'Interview Scheduled')", [dbEmpId]);
+        const offers = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Offered', 'Hired')", [dbEmpId]);
+
+        const funnelRes = await pool.query("SELECT status, COUNT(*) as count FROM job_applications WHERE employer_id = $1 GROUP BY status", [dbEmpId]);
         const funnel = { Applied: 0, Shortlisted: 0, Interview: 0, Offer: 0, Hired: 0 };
         funnelRes.rows.forEach(row => {
             if (row.status === 'Applied') funnel.Applied = parseInt(row.count);
@@ -795,20 +803,29 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
             SELECT ja.id as application_id, ja.status, ja.applied_at, COALESCE(c.full_name, 'Candidate') as candidate_name, ja.candidate_id, j.title as job_title, FLOOR(RANDOM() * (98 - 75 + 1) + 75) as match_score
             FROM job_applications ja LEFT JOIN candidates c ON ja.candidate_id = c.unique_id JOIN jobs j ON ja.job_id = j.id
             WHERE ja.employer_id = $1 ORDER BY ja.applied_at DESC LIMIT 5
-        `, [employerId]);
+        `, [dbEmpId]);
 
         res.json({ success: true, data: {
             kpis: { activeJobs: parseInt(activeJobs.rows[0].count), applications: parseInt(totalApps.rows[0].count), interviews: parseInt(interviews.rows[0].count), offersMade: parseInt(offers.rows[0].count) },
             funnelData: funnel, recentApplicants: recentApps.rows
         }});
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("Dashboard Error:", error);
+        res.status(500).json({ success: false, message: error.message }); 
+    }
 });
 
 app.get('/api/employer/:employerId/analytics', async (req, res) => {
     const { employerId } = req.params;
     try {
-        const appsRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [employerId]);
-        const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status = 'Hired'", [employerId]);
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        const appsRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [dbEmpId]);
+        const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status = 'Hired'", [dbEmpId]);
         const totalApps = parseInt(appsRes.rows[0].count) || 0;
         const totalHires = parseInt(hiresRes.rows[0].count) || 0;
 
@@ -821,7 +838,7 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
             LEFT JOIN events e ON j.event_id = e.id
             WHERE ja.employer_id = $1 
             ORDER BY ja.applied_at DESC
-        `, [employerId]);
+        `, [dbEmpId]);
 
         const monthlyData = [
             { month: "Jan", apps: Math.floor(totalApps * 0.2), hires: Math.floor(totalHires * 0.2) },
@@ -852,11 +869,17 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
         const result = await pool.query(
             `SELECT id, company_name as "companyName", hr_name as "fullName", designation, email, 
                     hr_phone as mobile, department, language, about_company as about, photo_url as "photoUrl" 
-             FROM employers WHERE id::text = $1 OR email = $1`, 
-            [employerId]
+             FROM employers WHERE id = $1`, 
+            [dbEmpId]
         );
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Employer profile not found." });
@@ -872,9 +895,15 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
 app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
     const { employerId } = req.params;
     try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
         const countRes = await pool.query(
-            "SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1", 
-            [employerId]
+            "SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", 
+            [dbEmpId]
         );
         const count = parseInt(countRes.rows[0].count) || 0;
         res.json({ success: true, count });
