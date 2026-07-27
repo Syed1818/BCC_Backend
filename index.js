@@ -992,32 +992,50 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
+// --- APPLY FOR EMPLOYER EVENT STALL ---
 app.post('/api/employer/event-stalls/apply', async (req, res) => {
     const { employerId, eventId } = req.body;
+    
+    if (!employerId || !eventId) {
+        return res.status(400).json({ success: false, message: "Missing employerId or eventId" });
+    }
+
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        // If local storage saved an email or string instead of numeric ID:
+        if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
+            const lookup = await pool.query(
+                "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", 
+                [employerId]
+            );
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer account not found." });
+            }
         }
 
+        // Check if already applied
         const duplicate = await pool.query(
             "SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2",
             [dbEmpId, eventId]
         );
+
         if (duplicate.rows.length > 0) {
             return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
         }
 
+        // Insert new application
         await pool.query(
-            "INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) VALUES ($1, $2, 'pending', 'pending', NOW())",
+            `INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) 
+             VALUES ($1, $2, 'pending', 'pending', NOW())`,
             [dbEmpId, eventId]
         );
 
-        res.json({ success: true, message: "Stall application submitted successfully." });
+        return res.json({ success: true, message: "Stall application submitted successfully." });
     } catch (error) {
         console.error("❌ Error applying for stall:", error);
-        res.status(500).json({ success: false, message: "Server error applying for stall." });
+        return res.status(500).json({ success: false, message: "Database Error: " + error.message });
     }
 });
 app.get('/api/employer/:employerId/analytics', async (req, res) => {
