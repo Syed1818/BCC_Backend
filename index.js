@@ -596,13 +596,23 @@ app.get('/api/candidate/:id/applications', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        
         const result = await pool.query(`
-            SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, j.event_id, e.name as event_name
-            FROM job_applications ja JOIN jobs j ON ja.job_id = j.id LEFT JOIN events e ON j.event_id = e.id
-            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 ORDER BY ja.applied_at DESC
+            SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
+                   CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
+                   e.name as event_name
+            FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            LEFT JOIN events e ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
+            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
+            ORDER BY ja.applied_at DESC
         `, [req.params.id, candidateIntId.toString()]);
+        
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("❌ Error fetching candidate applications:", error);
+        res.status(500).json({ success: false, message: "Server error fetching applications." }); 
+    }
 });
 
 app.get('/api/candidate/:id/events', async (req, res) => {
