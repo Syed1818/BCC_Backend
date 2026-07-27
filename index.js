@@ -821,7 +821,6 @@ app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
     }
 });
 // --- EMPLOYER: CALL NEXT CANDIDATE IN QUEUE (STARTS 5-MIN TIMER) ---
-// --- EMPLOYER: CALL NEXT CANDIDATE (PHASE 4 - 5 MIN TIMER) ---
 app.post('/api/employer/queue/call-next', async (req, res) => {
     const { eventId, jobId, employerId } = req.body;
 
@@ -830,14 +829,13 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
     }
 
     try {
-        // 1. Resolve employer ID safely
         let dbEmpId = employerId;
-        if (employerId && (employerId.includes('@') || isNaN(employerId))) {
+        if (employerId && (typeof employerId === 'string') && (employerId.includes('@') || isNaN(employerId))) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
-        // 2. Check if someone is already currently 'called' for this job
+        // 1. Check if someone is already currently 'called'
         const activeCalled = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
             [eventId, jobId]
@@ -850,7 +848,7 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
             });
         }
 
-        // 3. Find the next waiting candidate ordered by token number
+        // 2. Find the next waiting candidate
         const nextInLine = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
             [eventId, jobId]
@@ -863,7 +861,7 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         const targetId = nextInLine.rows[0].id;
         const targetToken = nextInLine.rows[0].token_number;
 
-        // 4. Update to 'called' and set 5-minute timer expiration
+        // 3. Update to 'called' and set 5-minute timer expiration
         const updated = await pool.query(
             `UPDATE event_queues 
              SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
@@ -879,10 +877,9 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error calling next candidate:", error);
-        res.status(500).json({ success: false, message: "Server error calling next candidate: " + error.message });
+        res.status(500).json({ success: false, message: "Server error: " + error.message });
     }
 });
-
 // --- EMPLOYER: UPDATE QUEUE STATUS (COMPLETE / MISSED / NO-SHOW) ---
 app.put('/api/employer/queue/:queueId/status', async (req, res) => {
     const { queueId } = req.params;
