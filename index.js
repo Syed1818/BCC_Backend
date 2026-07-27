@@ -1093,17 +1093,14 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
 });
 
 // --- GET EMPLOYER PROFILE ---
+// --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, message: "Employer profile not found." });
-            }
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
         const result = await pool.query(
