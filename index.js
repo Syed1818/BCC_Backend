@@ -183,11 +183,23 @@ app.post('/api/auth/login', async (req, res) => {
         const digitsOnly = rawInput.replace(/\D/g, "");
         const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
-        if (role === 'admin') {
-            const adminResult = await pool.query("SELECT * FROM admins WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
-            if (adminResult.rows.length === 0) return res.status(401).json({ success: false, message: 'Admin account not found.' });
+      if (role === 'admin') {
+            let adminResult = await pool.query("SELECT * FROM admins WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+            let admin = null;
+            let teamMember = false;
 
-            const admin = adminResult.rows[0];
+            if (adminResult.rows.length > 0) {
+                admin = adminResult.rows[0];
+            } else {
+                const teamResult = await pool.query("SELECT * FROM admin_team WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+                if (teamResult.rows.length > 0) {
+                    admin = teamResult.rows[0];
+                    teamMember = true;
+                }
+            }
+
+            if (!admin) return res.status(401).json({ success: false, message: 'Admin account not found.' });
+
             let isMatch = admin.password && admin.password.startsWith('$2') 
                 ? await bcrypt.compare(password, admin.password) 
                 : (password === admin.password);
@@ -196,7 +208,13 @@ app.post('/api/auth/login', async (req, res) => {
 
             return res.json({ 
                 success: true, 
-                data: { id: admin.unique_id || admin.id, name: admin.full_name || 'Admin', email: admin.email, role: 'admin' } 
+                data: { 
+                    id: admin.unique_id || admin.id, 
+                    name: admin.full_name || 'Admin', 
+                    email: admin.email, 
+                    role: teamMember ? admin.role : 'admin',
+                    permissions: teamMember ? admin.permissions : {}
+                } 
             });
         }
         if (role === 'employer') {
