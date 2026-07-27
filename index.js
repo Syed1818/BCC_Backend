@@ -1836,6 +1836,33 @@ app.get('/api/admin/events/:eventId/export', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error generating report." });
     }
 });
+// --- ADMIN: CREATE VENUE BLOCK ---
+app.post('/api/admin/events/:eventId/venue/blocks', async (req, res) => {
+    const { eventId } = req.params;
+    const { kind, name, code } = req.body;
+
+    if (!name || !code) {
+        return res.status(400).json({ success: false, message: "Block Name and Code are required." });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO venue_blocks (event_id, type, name, code) 
+             VALUES ($1, $2, $3, $4) 
+             RETURNING id, type as kind, name, code`,
+            [eventId, kind || 'Block', name.trim(), code.trim().toUpperCase()]
+        );
+
+        res.status(201).json({ 
+            success: true, 
+            message: "Venue block created successfully!", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error creating venue block:", error);
+        res.status(500).json({ success: false, message: "Database error creating block: " + error.message });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
