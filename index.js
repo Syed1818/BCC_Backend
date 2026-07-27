@@ -1664,6 +1664,92 @@ app.delete('/api/employer/hrs/:hrId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error removing HR member." });
     }
 });
+// --- GET EMPLOYER EVENT QUEUE ---
+app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
+    const { employerId, eventId } = req.params;
+    const { jobId } = req.query;
+
+    try {
+        let query = `
+            SELECT q.id, q.token_number as "tokenNumber", q.status, q.called_at as "calledAt", 
+                   q.timer_expires_at as "timerExpiresAt", c.full_name as "candidateName", 
+                   c.phone, c.qualification_level as qualification, j.title as "jobTitle"
+            FROM event_queues q
+            JOIN candidates c ON q.candidate_id = c.id
+            JOIN jobs j ON q.job_id = j.id
+            WHERE q.event_id = $1
+        `;
+        let params = [eventId];
+
+        if (jobId) {
+            query += ` AND q.job_id = $2`;
+            params.push(jobId);
+        }
+
+        query += ` ORDER BY q.token_number ASC`;
+
+        const result = await pool.query(query, params);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching employer queue:", error);
+        res.status(500).json({ success: false, message: "Server error fetching queue." });
+    }
+});
+
+// --- EMPLOYER: CALL NEXT CANDIDATE (PHASE 4 - 5 MIN TIMER) ---
+app.post('/api/employer/queue/call-next', async (req, res) => {
+    const { eventId, jobId, employerId } = req.body;
+
+    if (!eventId || !jobId) {
+        return res.status(400).json({ success: false, message: "Missing eventId or jobId." });
+    }
+
+    try {
+        // 1. Check if someone is already currently 'called'
+        const activeCalled = await pool.query(
+            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
+            [eventId, jobId]
+        );
+
+        if (activeCalled.rows.length > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Token #${activeCalled.rows[0].token_number} is already active. Complete or mark them as No-Show first.` 
+            });
+        }
+
+        // 2. Find the next waiting candidate
+        const nextInLine = await pool.query(
+            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
+            [eventId, jobId]
+        );
+
+        if (nextInLine.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "No candidates currently waiting in queue." });
+        }
+
+        const targetId = nextInLine.rows[0].id;
+        const targetToken = nextInLine.rows[0].token_number;
+
+        // 3. Update to 'called' and set 5-minute timer expiration
+        const updated = await pool.query(
+            `UPDATE event_queues 
+             SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
+             WHERE id = $1 
+             RETURNING id, token_number, status, timer_expires_at as "timerExpiresAt"`,
+            [targetId]
+        );
+
+        res.json({ 
+            success: true, 
+            message: `Called Token #${targetToken}! 5-minute timer started.`, 
+            data: updated.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error calling next candidate:", error);
+        res.status(500).json({ success: false, message: "Server error calling next candidate." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
