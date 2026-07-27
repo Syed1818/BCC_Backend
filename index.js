@@ -915,6 +915,32 @@ app.put('/api/admin/jobs/:jobId/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating job status" });
     }
 });
+// --- ADMIN: UPDATE EMPLOYER STATUS ---
+app.put('/api/admin/employers/:dbId/status', async (req, res) => {
+    const { dbId } = req.params;
+    const { status } = req.body; // 'approved', 'rejected', 'blacklisted'
+    
+    try {
+        let dbStatus = status;
+        if (status === 'approved') dbStatus = 'approved';
+        if (status === 'rejected') dbStatus = 'rejected';
+        if (status === 'blacklisted') dbStatus = 'blacklisted';
+
+        const result = await pool.query(
+            `UPDATE employers SET status = $1 WHERE id = $2 RETURNING id, company_name, status`,
+            [dbStatus, dbId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        res.json({ success: true, message: `Employer status updated to ${dbStatus}`, data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error updating employer status:", error);
+        res.status(500).json({ success: false, message: "Server error updating employer status." });
+    }
+});
 
 app.get('/api/admin/employers', async (req, res) => {
     try {
