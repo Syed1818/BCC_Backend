@@ -826,6 +826,96 @@ app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching queue." });
     }
 });
+// --- EMPLOYER: CALL NEXT CANDIDATE IN QUEUE (STARTS 5-MIN TIMER) ---
+app.post('/api/employer/queue/call-next', async (req, res) => {
+    const { eventId, jobId, employerId } = req.body;
+
+    if (!eventId || !jobId || !employerId) {
+        return res.status(400).json({ success: false, message: "Missing required parameters." });
+    }
+
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        // 1. Check if there is already a candidate currently 'called' who hasn't finished
+        const activeCalled = await pool.query(
+            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
+            [eventId, jobId]
+        );
+
+        if (activeCalled.rows.length > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Token #${activeCalled.rows[0].token_number} is currently being interviewed. Complete or mark them as No-Show first.` 
+            });
+        }
+
+        // 2. Find the next candidate with status 'waiting' ordered by token number ascending
+        const nextInLine = await pool.query(
+            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
+            [eventId, jobId]
+        );
+
+        if (nextInLine.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "No candidates currently waiting in queue." });
+        }
+
+        const targetId = nextInLine.rows[0].id;
+        const targetToken = nextInLine.rows[0].token_number;
+
+        // 3. Update status to 'called' and set 5-minute timer expiry (NOW() + 5 minutes)
+        const updated = await pool.query(
+            `UPDATE event_queues 
+             SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
+             WHERE id = $1 
+             RETURNING id, token_number, status, timer_expires_at as "timerExpiresAt"`,
+            [targetId]
+        );
+
+        res.json({ 
+            success: true, 
+            message: `Called Token #${targetToken}! 5-minute timer started.`, 
+            data: updated.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error calling next candidate:", error);
+        res.status(500).json({ success: false, message: "Server error calling next candidate." });
+    }
+});
+
+// --- EMPLOYER: UPDATE QUEUE STATUS (COMPLETE / MISSED / NO-SHOW) ---
+app.put('/api/employer/queue/:queueId/status', async (req, res) => {
+    const { queueId } = req.params;
+    const { status } = req.body; // 'completed', 'missed', 'waiting'
+
+    if (!['completed', 'missed', 'waiting', 'called'].includes(status)) {
+        return res.status(400).json({ success: false, message: "Invalid status value." });
+    }
+
+    try {
+        const result = await pool.query(
+            "UPDATE event_queues SET status = $1 WHERE id = $2 RETURNING id, token_number, status",
+            [status, queueId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Queue entry not found." });
+        }
+
+        res.json({ 
+            success: true, 
+            message: `Queue status updated to ${status}.`, 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error updating queue status:", error);
+        res.status(500).json({ success: false, message: "Server error updating queue status." });
+    }
+});
 // ==========================================
 // 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
