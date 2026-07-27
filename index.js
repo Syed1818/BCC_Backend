@@ -1121,7 +1121,28 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
+// --- UPDATE EMPLOYER PROFILE PHOTO ---
+app.put('/api/employer/profile/:employerId/photo', async (req, res) => {
+    const { employerId } = req.params;
+    const { photoUrl } = req.body;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
 
+        await pool.query(
+            "UPDATE employers SET photo_url = $1 WHERE id = $2",
+            [photoUrl, dbEmpId]
+        );
+
+        res.json({ success: true, message: "Profile photo saved successfully!" });
+    } catch (error) {
+        console.error("❌ Error updating employer photo:", error);
+        res.status(500).json({ success: false, message: "Server error saving photo." });
+    }
+});
 // --- GET EMPLOYER EVENT STALL APPLICATIONS ---
 app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
