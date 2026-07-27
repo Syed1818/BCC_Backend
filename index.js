@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken'); 
 
@@ -991,7 +992,34 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
+app.post('/api/employer/event-stalls/apply', async (req, res) => {
+    const { employerId, eventId } = req.body;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
 
+        const duplicate = await pool.query(
+            "SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2",
+            [dbEmpId, eventId]
+        );
+        if (duplicate.rows.length > 0) {
+            return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
+        }
+
+        await pool.query(
+            "INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) VALUES ($1, $2, 'pending', 'pending', NOW())",
+            [dbEmpId, eventId]
+        );
+
+        res.json({ success: true, message: "Stall application submitted successfully." });
+    } catch (error) {
+        console.error("❌ Error applying for stall:", error);
+        res.status(500).json({ success: false, message: "Server error applying for stall." });
+    }
+});
 app.get('/api/employer/:employerId/analytics', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1100,7 +1128,6 @@ app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching event stalls." });
     }
 });
-
 // ==========================================
 // 8. EMPLOYER JOBS MANAGEMENT
 // ==========================================
