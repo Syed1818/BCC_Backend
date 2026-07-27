@@ -795,25 +795,19 @@ app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
     const { jobId } = req.query;
 
     try {
-        let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
-        }
-
         let query = `
-            SELECT q.id, q.token_number as "tokenNumber", q.status, q.created_at as "joinedAt",
-                   c.unique_id as "candidateUniqueId", c.full_name as "candidateName", c.phone, c.highest_qualification as qualification,
-                   j.title as "jobTitle"
+            SELECT q.id, q.token_number as "tokenNumber", q.status, q.called_at as "calledAt", 
+                   q.timer_expires_at as "timerExpiresAt", c.full_name as "candidateName", 
+                   c.phone, c.highest_qualification as qualification, j.title as "jobTitle"
             FROM event_queues q
             JOIN candidates c ON q.candidate_id = c.id
             JOIN jobs j ON q.job_id = j.id
-            WHERE q.employer_id = $1 AND q.event_id = $2
+            WHERE q.event_id = $1
         `;
-        const params = [dbEmpId, eventId];
+        let params = [eventId];
 
         if (jobId) {
-            query += ` AND q.job_id = $3`;
+            query += ` AND q.job_id = $2`;
             params.push(jobId);
         }
 
