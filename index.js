@@ -1768,6 +1768,74 @@ app.get('/api/admin/events/:eventId/crowd-monitoring', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching crowd data." });
     }
 });
+// --- ADMIN: GET COMPLETED EVENTS FOR HISTORY ---
+app.get('/api/admin/events/history', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT id, name, event_date, event_type, city, venue_address, status, description,
+                   (SELECT COUNT(DISTINCT employer_id) FROM employer_event_stalls WHERE event_id = events.id) as total_companies,
+                   (SELECT COUNT(*) FROM event_attendance WHERE event_id = events.id) as total_attendance
+            FROM events 
+            WHERE LOWER(status) = 'completed'
+            ORDER BY event_date DESC
+        `);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching event history:", error);
+        res.status(500).json({ success: false, message: "Server error fetching event history." });
+    }
+});
+
+// --- ADMIN: EXPORT COMPREHENSIVE EVENT REPORT (CSV) ---
+app.get('/api/admin/events/:eventId/export', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        // 1. Fetch Event Meta
+        const eventRes = await pool.query("SELECT * FROM events WHERE id = $1", [eventId]);
+        if (eventRes.rows.length === 0) return res.status(404).json({ success: false, message: "Event not found." });
+        const event = eventRes.rows[0];
+
+        // 2. Fetch Aggregated Statistics & Data
+        const statsRes = await pool.query(`
+            SELECT 
+                COALESCE(e.company_name, 'N/A') as company_name,
+                COALESCE(j.title, 'N/A') as job_title,
+                COUNT(DISTINCT ja.id) as total_applications,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status = 'Shortlisted') as shortlisted_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%Interview%') as interviewed_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status IN ('Hired', 'Offered')) as hired_count,
+                COUNT(DISTINCT q.id) as total_queue_tokens
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.id
+            LEFT JOIN job_applications ja ON ja.job_id = j.id
+            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
+            WHERE j.event_id = $1
+            GROUP BY e.company_name, j.title
+            ORDER BY e.company_name ASC;
+        `, [eventId]);
+
+        // 3. Construct CSV Data
+        const safeEventName = (event.name || 'Event').replace(/[^a-zA-Z0-9]/g, '_');
+        let csvRows = [];
+        csvRows.push(`Event Report: "${event.name}"`);
+        csvRows.push(`Date: ${event.event_date ? new Date(event.event_date).toISOString().split('T')[0] : 'N/A'}, Location: ${event.city || 'N/A'}`);
+        csvRows.push(``);
+        csvRows.push(`Company Name,Job Title,Total Applications,Shortlisted,Interviewed,Total Hired/Offered,Queue Tokens`);
+
+        statsRes.rows.forEach(row => {
+            csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted_count},${row.interviewed_count},${row.hired_count},${row.total_queue_tokens}`);
+        });
+
+        const csvString = csvRows.join('\n');
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=${safeEventName}_Master_Report.csv`);
+        res.status(200).send(csvString);
+    } catch (error) {
+        console.error("❌ Error exporting event report:", error);
+        res.status(500).json({ success: false, message: "Server error generating report." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
