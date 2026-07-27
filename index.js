@@ -199,21 +199,48 @@ app.post('/api/auth/login', async (req, res) => {
                 data: { id: admin.unique_id || admin.id, name: admin.full_name || 'Admin', email: admin.email, role: 'admin' } 
             });
         }
-
         if (role === 'employer') {
             const cleanInput = rawInput.toLowerCase();
             const cleanCompany = company_name ? company_name.trim().toLowerCase() : "";
 
+            let employer = null;
+            let loggedInId = null;
+            let isHrAccount = false;
+
+            // 1. Check Master Employer Table FIRST
             const empResult = await pool.query(
                 "SELECT * FROM employers WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
                 [cleanInput, cleanCompany]
             );
 
-            if (empResult.rows.length === 0) {
-                return res.status(401).json({ success: false, message: 'Employer account not found.' });
+            if (empResult.rows.length > 0) {
+                employer = empResult.rows[0];
+                loggedInId = employer.id;
+            } else {
+                // 2. If not found in master table, check employer_hrs joined to employers
+                const hrResult = await pool.query(`
+                    SELECT h.*, e.company_name, e.status as employer_status, e.id as master_employer_id
+                    FROM employer_hrs h
+                    JOIN employers e ON h.employer_id = e.id
+                    WHERE LOWER(TRIM(h.email)) = $1 AND LOWER(TRIM(e.company_name)) = $2
+                `, [cleanInput, cleanCompany]);
+
+                if (hrResult.rows.length > 0) {
+                    const hrData = hrResult.rows[0];
+                    employer = {
+                        ...hrData,
+                        status: hrData.employer_status,
+                        password: hrData.password_hash
+                    };
+                    loggedInId = hrData.master_employer_id;
+                    isHrAccount = true;
+                }
             }
 
-            const employer = empResult.rows[0];
+            if (!employer) {
+                return res.status(401).json({ success: false, message: 'Employer or HR account not found for this company name.' });
+            }
+
             const currentStatus = (employer.status || 'pending').toLowerCase().trim();
 
             if (currentStatus === 'pending') {
@@ -237,13 +264,18 @@ app.post('/api/auth/login', async (req, res) => {
             return res.json({ 
                 success: true, 
                 data: { 
-                    id: employer.id, 
+                    id: loggedInId, 
                     name: employer.company_name, 
                     email: employer.email, 
-                    role: 'employer' 
+                    role: 'employer',
+                    isHr: isHrAccount,
+                    hrName: isHrAccount ? employer.full_name : null
                 } 
             });
         }
+
+       
+        
 
         if (role === 'candidate' || !role) {
             const queryText = `
