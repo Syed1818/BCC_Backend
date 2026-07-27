@@ -821,21 +821,23 @@ app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
     }
 });
 // --- EMPLOYER: CALL NEXT CANDIDATE IN QUEUE (STARTS 5-MIN TIMER) ---
+// --- EMPLOYER: CALL NEXT CANDIDATE (PHASE 4 - 5 MIN TIMER) ---
 app.post('/api/employer/queue/call-next', async (req, res) => {
     const { eventId, jobId, employerId } = req.body;
 
-    if (!eventId || !jobId || !employerId) {
-        return res.status(400).json({ success: false, message: "Missing required parameters." });
+    if (!eventId || !jobId) {
+        return res.status(400).json({ success: false, message: "Missing eventId or jobId." });
     }
 
     try {
+        // 1. Resolve employer ID safely
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
+        if (employerId && (employerId.includes('@') || isNaN(employerId))) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
-        // 1. Check if there is already a candidate currently 'called' who hasn't finished
+        // 2. Check if someone is already currently 'called' for this job
         const activeCalled = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
             [eventId, jobId]
@@ -844,11 +846,11 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         if (activeCalled.rows.length > 0) {
             return res.status(400).json({ 
                 success: false, 
-                message: `Token #${activeCalled.rows[0].token_number} is currently being interviewed. Complete or mark them as No-Show first.` 
+                message: `Token #${activeCalled.rows[0].token_number} is already active. Complete or mark them as No-Show first.` 
             });
         }
 
-        // 2. Find the next candidate with status 'waiting' ordered by token number ascending
+        // 3. Find the next waiting candidate ordered by token number
         const nextInLine = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
             [eventId, jobId]
@@ -861,7 +863,7 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         const targetId = nextInLine.rows[0].id;
         const targetToken = nextInLine.rows[0].token_number;
 
-        // 3. Update status to 'called' and set 5-minute timer expiry (NOW() + 5 minutes)
+        // 4. Update to 'called' and set 5-minute timer expiration
         const updated = await pool.query(
             `UPDATE event_queues 
              SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
@@ -877,7 +879,7 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error calling next candidate:", error);
-        res.status(500).json({ success: false, message: "Server error calling next candidate." });
+        res.status(500).json({ success: false, message: "Server error calling next candidate: " + error.message });
     }
 });
 
