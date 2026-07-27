@@ -731,7 +731,101 @@ app.post('/api/candidate/feedback', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// ==========================================
+// 5.5. JOB FAIR LIVE QUEUE & TOKEN APIS (PHASE 3)
+// ==========================================
 
+// --- CANDIDATE: JOIN LIVE INTERVIEW QUEUE & GET TOKEN ---
+app.post('/api/events/queue/join', async (req, res) => {
+    const { eventId, jobId, employerId, candidateId } = req.body;
+
+    if (!eventId || !jobId || !employerId || !candidateId) {
+        return res.status(400).json({ success: false, message: "Missing required queue parameters." });
+    }
+
+    try {
+        let dbCandId = candidateId;
+        const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateId.toString()]);
+        if (candLookup.rows.length > 0) {
+            dbCandId = candLookup.rows[0].id;
+        }
+
+        // Prevent duplicate active queue entries for the same job
+        const existing = await pool.query(
+            "SELECT id, token_number, status FROM event_queues WHERE event_id = $1 AND job_id = $2 AND candidate_id = $3 AND status IN ('waiting', 'called')",
+            [eventId, jobId, dbCandId]
+        );
+
+        if (existing.rows.length > 0) {
+            return res.json({ 
+                success: true, 
+                alreadyInQueue: true, 
+                tokenNumber: existing.rows[0].token_number, 
+                message: `You are already in line with Token #${existing.rows[0].token_number}!` 
+            });
+        }
+
+        // Calculate next sequential token number for this job queue
+        const maxTokenRes = await pool.query(
+            "SELECT COALESCE(MAX(token_number), 0) as max_token FROM event_queues WHERE event_id = $1 AND job_id = $2",
+            [eventId, jobId]
+        );
+        const nextToken = parseInt(maxTokenRes.rows[0].max_token) + 1;
+
+        await pool.query(
+            `INSERT INTO event_queues (event_id, job_id, employer_id, candidate_id, token_number, status, created_at) 
+             VALUES ($1, $2, $3, $4, $5, 'waiting', NOW())`,
+            [eventId, jobId, employerId, dbCandId, nextToken]
+        );
+
+        res.status(201).json({ 
+            success: true, 
+            tokenNumber: nextToken, 
+            message: `Successfully joined queue! Your Token Number is #${nextToken}.` 
+        });
+    } catch (error) {
+        console.error("❌ Error joining event queue:", error);
+        res.status(500).json({ success: false, message: "Server error joining queue." });
+    }
+});
+
+// --- EMPLOYER: GET LIVE QUEUE FOR A JOB / EVENT ---
+app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
+    const { employerId, eventId } = req.params;
+    const { jobId } = req.query;
+
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+        }
+
+        let query = `
+            SELECT q.id, q.token_number as "tokenNumber", q.status, q.created_at as "joinedAt",
+                   c.unique_id as "candidateUniqueId", c.full_name as "candidateName", c.phone, c.highest_qualification as qualification,
+                   j.title as "jobTitle"
+            FROM event_queues q
+            JOIN candidates c ON q.candidate_id = c.id
+            JOIN jobs j ON q.job_id = j.id
+            WHERE q.employer_id = $1 AND q.event_id = $2
+        `;
+        const params = [dbEmpId, eventId];
+
+        if (jobId) {
+            query += ` AND q.job_id = $3`;
+            params.push(jobId);
+        }
+
+        query += ` ORDER BY q.token_number ASC`;
+
+        const result = await pool.query(query, params);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching employer queue:", error);
+        res.status(500).json({ success: false, message: "Server error fetching queue." });
+    }
+});
 // ==========================================
 // 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
