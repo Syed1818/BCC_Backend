@@ -1167,13 +1167,18 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
     try {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
         const result = await pool.query(
-            `SELECT id, company_name as "companyName", hr_name as "fullName", designation, email, 
-                    hr_phone as mobile, department, language, about_company as about, photo_url as "photoUrl" 
+            `SELECT id, company_name as "companyName", COALESCE(hr_name, '') as "fullName", 
+                    COALESCE(designation, '') as designation, email, 
+                    COALESCE(hr_phone, '') as mobile, 
+                    COALESCE(department, 'tech') as department, 
+                    COALESCE(language, 'en') as language, 
+                    COALESCE(about_company, '') as about, 
+                    photo_url as "photoUrl" 
              FROM employers WHERE id = $1`, 
             [dbEmpId]
         );
