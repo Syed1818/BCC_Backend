@@ -1387,7 +1387,86 @@ app.put('/api/employer/jobs/:jobId/reactivate', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error reactivating job." });
     }
 });
+// --- GET SUB-HR MEMBERS FOR AN EMPLOYER ---
+app.get('/api/employer/:employerId/hrs', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer not found." });
+        }
 
+        const result = await pool.query(
+            "SELECT id, full_name as \"fullName\", email, created_at as \"createdAt\" FROM employer_hrs WHERE employer_id = $1 ORDER BY created_at DESC",
+            [dbEmpId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching HR members:", error);
+        res.status(500).json({ success: false, message: "Server error fetching HR members." });
+    }
+});
+
+// --- ADD A SUB-HR MEMBER (MAX 3 LIMIT) ---
+app.post('/api/employer/:employerId/hrs', async (req, res) => {
+    const { employerId } = req.params;
+    const { fullName, email, password } = req.body;
+
+    if (!fullName || !email || !password) {
+        return res.status(400).json({ success: false, message: "Full Name, Email, and Password are required." });
+    }
+
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        // Check current count (Limit 3)
+        const countCheck = await pool.query("SELECT COUNT(*) FROM employer_hrs WHERE employer_id = $1", [dbEmpId]);
+        if (parseInt(countCheck.rows[0].count) >= 3) {
+            return res.status(400).json({ success: false, message: "Maximum limit of 3 HR members reached." });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+        const emailCheck = await pool.query("SELECT id FROM employer_hrs WHERE LOWER(email) = $1", [cleanEmail]);
+        if (emailCheck.rows.length > 0) {
+            return res.status(400).json({ success: false, message: "An HR member with this email already exists." });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const passwordHash = await bcrypt.hash(password, salt);
+
+        await pool.query(
+            "INSERT INTO employer_hrs (employer_id, full_name, email, password_hash) VALUES ($1, $2, $3, $4)",
+            [dbEmpId, fullName.trim(), cleanEmail, passwordHash]
+        );
+
+        res.status(201).json({ success: true, message: "HR member added successfully." });
+    } catch (error) {
+        console.error("❌ Error adding HR member:", error);
+        res.status(500).json({ success: false, message: "Server error adding HR member." });
+    }
+});
+
+// --- DELETE A SUB-HR MEMBER ---
+app.delete('/api/employer/hrs/:hrId', async (req, res) => {
+    const { hrId } = req.params;
+    try {
+        const result = await pool.query("DELETE FROM employer_hrs WHERE id = $1 RETURNING id", [hrId]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "HR member not found." });
+        }
+        res.json({ success: true, message: "HR member removed successfully." });
+    } catch (error) {
+        console.error("❌ Error removing HR member:", error);
+        res.status(500).json({ success: false, message: "Server error removing HR member." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
