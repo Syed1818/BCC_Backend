@@ -1161,14 +1161,21 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
 });
 
 // --- GET EMPLOYER PROFILE ---
-// --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
+        // If employerId is an email or text string, look up its actual database numeric ID
         if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            const lookup = await pool.query(
+                "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", 
+                [employerId]
+            );
+            if (lookup.rows.length > 0) {
+                dbEmpId = lookup.rows[0].id;
+            } else {
+                return res.status(404).json({ success: false, message: "Employer profile not found." });
+            }
         }
 
         const result = await pool.query(
@@ -1182,6 +1189,7 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
              FROM employers WHERE id = $1`, 
             [dbEmpId]
         );
+        
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Employer profile not found." });
         }
