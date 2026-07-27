@@ -1743,6 +1743,31 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error calling next candidate." });
     }
 });
+// --- ADMIN: LIVE CROWD MONITORING & STALL QUEUE STATS ---
+app.get('/api/admin/events/:eventId/crowd-monitoring', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        const query = `
+            SELECT 
+                e.id as employer_id,
+                e.company_name as "companyName",
+                COUNT(q.id) FILTER (WHERE q.status = 'waiting') as "waitingCount",
+                COUNT(q.id) FILTER (WHERE q.status = 'called') as "calledCount",
+                COUNT(q.id) FILTER (WHERE q.status = 'completed') as "completedCount"
+            FROM employers e
+            JOIN jobs j ON j.employer_id = e.id
+            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
+            WHERE j.event_id = $1
+            GROUP BY e.id, e.company_name
+            ORDER BY "waitingCount" DESC;
+        `;
+        const result = await pool.query(query, [eventId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching crowd monitoring stats:", error);
+        res.status(500).json({ success: false, message: "Server error fetching crowd data." });
+    }
+});
 // ==========================================
 // SERVER STARTUP
 // ==========================================
