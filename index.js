@@ -1917,6 +1917,55 @@ app.get('/api/admin/team', async (req, res) => {
     }
 });
 // ==========================================
+// ADMIN TEAM & IAM MANAGEMENT APIS (Feature 10)
+// ==========================================
+app.post('/api/admin/team', async (req, res) => {
+    const { fullName, email, password, role, permissions } = req.body;
+    if (!fullName || !email || !password || !role) {
+        return res.status(400).json({ success: false, message: "Missing required fields." });
+    }
+    if (role === 'Admin') {
+        return res.status(400).json({ success: false, message: "The Master Admin role is exclusive to the BCC CEO and cannot be assigned." });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const result = await pool.query(
+            `INSERT INTO admin_team (full_name, email, password, role, permissions, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())
+             RETURNING id, full_name, email, role`,
+            [fullName.trim(), email.trim().toLowerCase(), hashedPassword, role, JSON.stringify(permissions || {})]
+        );
+
+        res.status(201).json({ success: true, message: "Admin team member created successfully.", data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error adding admin team member:", error);
+        res.status(500).json({ success: false, message: "Server error saving team member." });
+    }
+});
+
+app.get('/api/admin/team', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT id, full_name as name, email, role, created_at FROM admin_team ORDER BY created_at DESC");
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching admin team:", error);
+        res.status(500).json({ success: false, message: "Server error fetching team members." });
+    }
+});
+
+app.delete('/api/admin/team/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query("DELETE FROM admin_team WHERE id = $1", [id]);
+        res.json({ success: true, message: "Team member deleted successfully." });
+    } catch (error) {
+        console.error("❌ Error deleting team member:", error);
+        res.status(500).json({ success: false, message: "Server error deleting member." });
+    }
+});
+// ==========================================
 // SERVER STARTUP
 // ==========================================
 app.listen(PORT, () => {
