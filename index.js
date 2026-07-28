@@ -2055,6 +2055,7 @@ app.get('/api/employer/:employerId/job-options', async (req, res) => {
 });
 
 // 2. Get applicants for a specific job posting
+// --- AUTOMATIC APPLICANT FETCHING FOR EMPLOYER PANEL ---
 app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
     const { jobId } = req.params;
     try {
@@ -2073,10 +2074,9 @@ app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
                 c.resume_file_name,
                 85 as "matchScore"
             FROM job_applications ja
-            JOIN candidates c ON ja.candidate_id = c.id 
-    OR ja.candidate_id::text = c.id::text 
-    OR ja.candidate_id::text = c.unique_id
-            WHERE ja.job_id = $1
+            JOIN candidates c ON ja.candidate_id::text = c.id::text 
+                OR ja.candidate_id::text = c.unique_id
+            WHERE ja.job_id::text = $1::text
             ORDER BY ja.applied_at DESC
         `, [jobId]);
 
