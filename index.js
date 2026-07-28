@@ -1966,6 +1966,63 @@ app.delete('/api/admin/team/:id', async (req, res) => {
     }
 });
 // ==========================================
+// EXPORT EVENT REPORT CSV ROUTE
+// ==========================================
+app.get('/api/admin/events/:id/export', async (req, res) => {
+    const eventId = req.params.id;
+    try {
+        // 1. Fetch event details
+        const eventResult = await pool.query("SELECT * FROM events WHERE id = $1", [eventId]);
+        if (eventResult.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Event not found" });
+        }
+        const event = eventResult.rows[0];
+
+        // 2. Fetch jobs and aggregate metrics for this event
+        const jobsResult = await pool.query(
+            `SELECT j.title as job_title, 
+                    COALESCE(e.company_name, 'Direct Employer') as company_name,
+                    COUNT(app.id) as total_applications,
+                    SUM(CASE WHEN app.status = 'shortlisted' THEN 1 ELSE 0 END) as shortlisted,
+                    SUM(CASE WHEN app.status = 'interviewed' THEN 1 ELSE 0 END) as interviewed,
+                    SUM(CASE WHEN app.status = 'hired' THEN 1 ELSE 0 END) as total_hired
+             FROM jobs j
+             LEFT JOIN employers e ON j.employer_id = e.id
+             LEFT JOIN applications app ON j.id = app.job_id
+             WHERE j.event_id = $1
+             GROUP BY j.id, j.title, e.company_name`,
+            [eventId]
+        );
+
+        // 3. Construct CSV output format
+        let csvRows = [];
+        csvRows.push(`"Event Report:","${event.name || 'Udyoga Mela'}"`);
+        csvRows.push(`"Date:","${event.event_date ? new Date(event.event_date).toLocaleDateString('en-IN') : 'N/A'}","Location:","${event.city || event.venue_address || 'N/A'}"`);
+        csvRows.push(""); // Empty separator row
+        csvRows.push(`"Company Name","Job Title","Total Applications","Shortlisted","Interviewed","Total Hired","Queue Tokens"`);
+
+        if (jobsResult.rows.length === 0) {
+            csvRows.push(`"No job postings found for this event","","","","","",""`);
+        } else {
+            jobsResult.rows.forEach(row => {
+                csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted},${row.interviewed},${row.total_hired},0`);
+            });
+        }
+
+        const csvString = csvRows.join("\n");
+
+        // 4. Set headers for file download
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${(event.name || 'event').replace(/\s+/g, '_')}_Report.csv"`);
+        
+        return res.status(200).send(csvString);
+
+    } catch (error) {
+        console.error("❌ Error exporting event report:", error);
+        return res.status(500).json({ success: false, message: "Server error generating report." });
+    }
+});
+// ==========================================
 // SERVER STARTUP
 // ==========================================
 app.listen(PORT, () => {
