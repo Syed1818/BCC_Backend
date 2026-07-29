@@ -1,7 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
-
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken'); 
 
