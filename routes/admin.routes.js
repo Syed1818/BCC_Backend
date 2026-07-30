@@ -76,7 +76,11 @@ router.get('/attendance-history', async (req, res) => {
 
 router.get('/live-events', async (req, res) => {
     try {
-        const eventsResult = await pool.query('SELECT * FROM events WHERE is_live = TRUE ORDER BY created_at DESC');
+        const eventsResult = await pool.query(`
+            SELECT * FROM events
+            WHERE LOWER(COALESCE(status, '')) = 'live'
+            ORDER BY created_at DESC
+        `);
         const liveEvents = eventsResult.rows;
         if (liveEvents.length === 0) return res.json({ success: true, data: [] });
 
