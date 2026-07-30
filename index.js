@@ -42,12 +42,23 @@ app.get('/api/health', async (req, res) => {
 // 4. AUTHENTICATION & REGISTRATION APIS
 // ==========================================
 
-// --- CANDIDATE REGISTRATION ---
+// --- CANDIDATE REGISTRATION (WITH F1 & F2 REQUIREMENTS) ---
 app.post('/api/auth/candidate/register', async (req, res) => {
     const data = req.body;
     try {
         if (!data.fullName || (!data.email && !data.phone)) {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
+        }
+
+        // =========================================================
+        // STEP 1 FIX (F2): Enforce Password Strength Server-Side
+        // =========================================================
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^])[A-Za-z\d@$!%*?&#^]{8,}$/;
+        if (!data.password || !passwordRegex.test(data.password)) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 8 characters long and include 1 capital letter, 1 small letter, 1 number, and 1 special character."
+            });
         }
 
         const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
@@ -85,6 +96,13 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             }
         }
 
+        // =========================================================
+        // STEP 1 FIX (F1): Resolve "Others" Custom Gender Details
+        // =========================================================
+        const resolvedGender = (data.gender === 'Others' && data.customGender && data.customGender.trim() !== '')
+            ? `Others - ${data.customGender.trim()}`
+            : (data.gender || null);
+
         const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
 
         const insertQuery = `
@@ -105,11 +123,11 @@ app.post('/api/auth/candidate/register', async (req, res) => {
             data.fullName ? data.fullName.trim() : "",
             cleanEmail,
             cleanPhone,
-            data.password || "BccPass@123",
+            data.password,          // Validated password
             parsedDob,
-            data.gender || null,
+            resolvedGender,         // Resolved custom gender
             data.language || 'English',
-            data.category || 'General Merit (GM)',
+            data.socialCategory || data.category || 'General Merit (GM)',
             data.pincode || null,
             data.state || null,
             data.district || null,
@@ -181,7 +199,7 @@ app.post('/api/auth/login', async (req, res) => {
         const digitsOnly = rawInput.replace(/\D/g, "");
         const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
-      if (role === 'admin') {
+        if (role === 'admin') {
             let adminResult = await pool.query("SELECT * FROM admins WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
             let admin = null;
             let teamMember = false;
@@ -289,9 +307,6 @@ app.post('/api/auth/login', async (req, res) => {
                 } 
             });
         }
-
-       
-        
 
         if (role === 'candidate' || !role) {
             const queryText = `
@@ -401,7 +416,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
 app.post('/api/events/attendance/mark', async (req, res) => {
     const { eventId, userId, userType, code } = req.body;
 
-    // 1. Strict Null Checks
     if (!eventId || !userId) {
         return res.status(400).json({ success: false, message: "Missing eventId or userId in request." });
     }
@@ -413,37 +427,31 @@ app.post('/api/events/attendance/mark', async (req, res) => {
     try {
         let dbUserId = userId;
 
-        // 2. Safe Candidate Resolution
         if (userType === 'candidate') {
             const candLookup = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [userId.toString()]);
             if (candLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate account not found." });
             dbUserId = candLookup.rows[0].id;
         } 
-        // 3. Safe Employer Resolution
         else if (userType === 'employer') {
              const empLookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [userId.toString()]);
              if (empLookup.rows.length === 0) return res.status(404).json({ success: false, message: "Employer account not found." });
              dbUserId = empLookup.rows[0].id;
         }
 
-        // 4. Prevent Duplicate Check-ins
         const duplicateCheck = await pool.query(
             "SELECT id FROM event_attendance WHERE event_id = $1 AND user_id = $2 AND user_type = $3", 
             [eventId, dbUserId, userType]
         );
         if (duplicateCheck.rows.length > 0) {
-            // Already checked in? Just return success to gracefully unlock the UI!
             return res.json({ success: true, message: "Already checked in! Event unlocked." });
         }
 
-        // 5. Insert Attendance matching DB Schema (checked_in_at)
         await pool.query(
             `INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) 
              VALUES ($1, $2, $3, NOW())`,
             [eventId, dbUserId, userType]
         );
 
-        // 6. Update Registration Status (Unlocks Jobs)
         if (userType === 'candidate') {
             await pool.query(
                 `UPDATE event_candidate_registrations 
@@ -459,7 +467,6 @@ app.post('/api/events/attendance/mark', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error marking attendance." });
     }
 });
-
 
 // ==========================================
 // 5. CANDIDATE PORTAL & SAVED JOBS APIS
@@ -748,10 +755,8 @@ app.post('/api/candidate/feedback', async (req, res) => {
 });
 
 // ==========================================
-// 5.5. JOB FAIR LIVE QUEUE & TOKEN APIS (PHASE 3)
+// 5.5. JOB FAIR LIVE QUEUE & TOKEN APIS
 // ==========================================
-
-// --- CANDIDATE: JOIN LIVE INTERVIEW QUEUE & GET TOKEN ---
 app.post('/api/events/queue/join', async (req, res) => {
     const { eventId, jobId, employerId, candidateId } = req.body;
 
@@ -766,7 +771,6 @@ app.post('/api/events/queue/join', async (req, res) => {
             dbCandId = candLookup.rows[0].id;
         }
 
-        // Prevent duplicate active queue entries for the same job
         const existing = await pool.query(
             "SELECT id, token_number, status FROM event_queues WHERE event_id = $1 AND job_id = $2 AND candidate_id = $3 AND status IN ('waiting', 'called')",
             [eventId, jobId, dbCandId]
@@ -781,7 +785,6 @@ app.post('/api/events/queue/join', async (req, res) => {
             });
         }
 
-        // Calculate next sequential token number for this job queue
         const maxTokenRes = await pool.query(
             "SELECT COALESCE(MAX(token_number), 0) as max_token FROM event_queues WHERE event_id = $1 AND job_id = $2",
             [eventId, jobId]
@@ -805,7 +808,6 @@ app.post('/api/events/queue/join', async (req, res) => {
     }
 });
 
-// --- EMPLOYER: GET LIVE QUEUE FOR A JOB / EVENT ---
 app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
     const { employerId, eventId } = req.params;
     const { jobId } = req.query;
@@ -836,7 +838,7 @@ app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching queue." });
     }
 });
-// --- EMPLOYER: CALL NEXT CANDIDATE IN QUEUE (STARTS 5-MIN TIMER) ---
+
 app.post('/api/employer/queue/call-next', async (req, res) => {
     const { eventId, jobId, employerId } = req.body;
 
@@ -845,13 +847,6 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
     }
 
     try {
-        let dbEmpId = employerId;
-        if (employerId && (typeof employerId === 'string') && (employerId.includes('@') || isNaN(employerId))) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
-        }
-
-        // 1. Check if someone is already currently 'called'
         const activeCalled = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
             [eventId, jobId]
@@ -864,7 +859,6 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
             });
         }
 
-        // 2. Find the next waiting candidate
         const nextInLine = await pool.query(
             "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
             [eventId, jobId]
@@ -877,7 +871,6 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         const targetId = nextInLine.rows[0].id;
         const targetToken = nextInLine.rows[0].token_number;
 
-        // 3. Update to 'called' and set 5-minute timer expiration
         const updated = await pool.query(
             `UPDATE event_queues 
              SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
@@ -893,13 +886,13 @@ app.post('/api/employer/queue/call-next', async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error calling next candidate:", error);
-        res.status(500).json({ success: false, message: "Server error: " + error.message });
+        res.status(500).json({ success: false, message: "Server error calling next candidate." });
     }
 });
-// --- EMPLOYER: UPDATE QUEUE STATUS (COMPLETE / MISSED / NO-SHOW) ---
+
 app.put('/api/employer/queue/:queueId/status', async (req, res) => {
     const { queueId } = req.params;
-    const { status } = req.body; // 'completed', 'missed', 'waiting'
+    const { status } = req.body;
 
     if (!['completed', 'missed', 'waiting', 'called'].includes(status)) {
         return res.status(400).json({ success: false, message: "Invalid status value." });
@@ -925,9 +918,49 @@ app.put('/api/employer/queue/:queueId/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating queue status." });
     }
 });
+
 // ==========================================
 // 6. ADMIN DASHBOARD & MANAGEMENT APIS
 // ==========================================
+
+// --- ADMIN: ALLOCATE STALL [ADDED REQUIREMENT] ---
+app.put('/api/admin/stalls/:id/allocate', async (req, res) => {
+    const stallId = req.params.id;
+    const { eventId, employerId, stallCode } = req.body;
+    try {
+        await pool.query(
+            `UPDATE venue_stalls SET employer_id = $1 WHERE id = $2 OR code = $3`,
+            [employerId, stallId, stallCode]
+        );
+        await pool.query(
+            `UPDATE employer_event_stalls SET status = 'approved' WHERE event_id = $1 AND employer_id = $2`,
+            [eventId, employerId]
+        );
+        res.json({ success: true, message: "Stall allocated successfully!" });
+    } catch (error) {
+        console.error("❌ Stall Allocation Error:", error);
+        res.status(500).json({ success: false, message: "Server error allocating stall." });
+    }
+});
+
+// --- ADMIN: GET FEEDBACK & TESTIMONIALS [ADDED REQUIREMENT] ---
+app.get('/api/admin/feedback', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT cf.id, c.full_name as candidate_name, cf.overall_rating, 
+                   cf.registration_exp, cf.interview_quality, cf.event_management, 
+                   cf.video_url, cf.created_at
+            FROM candidate_feedback cf
+            JOIN candidates c ON cf.candidate_id = c.id
+            ORDER BY cf.created_at DESC
+        `);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching feedback:", error);
+        res.status(500).json({ success: false, message: "Server error fetching feedback." });
+    }
+});
+
 app.get('/api/admin/attendance-history', async (req, res) => {
     try {
         const query = `
@@ -961,7 +994,6 @@ app.get('/api/admin/attendance-history', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching attendance" });
     }
 });
-
 
 app.get('/api/admin/live-events', async (req, res) => {
     try {
@@ -1085,7 +1117,6 @@ app.get('/api/admin/stall-applications', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// --- ADMIN JOB APPROVAL APIS ---
 app.get('/api/admin/jobs', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -1099,7 +1130,6 @@ app.get('/api/admin/jobs', async (req, res) => {
     }
 });
 
-// --- ADMIN: VIEW JOBS FOR SPECIFIC EVENT ---
 app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
     try {
@@ -1114,7 +1144,6 @@ app.get('/api/admin/events/:eventId/jobs', async (req, res) => {
     }
 });
 
-// --- PUBLIC EVENT JOBS PREVIEW ROUTE ---
 app.get('/api/events/:eventId/jobs', async (req, res) => {
     const { eventId } = req.params;
     try {
@@ -1129,7 +1158,6 @@ app.get('/api/events/:eventId/jobs', async (req, res) => {
     }
 });
 
-// --- ADMIN: APPROVE / REJECT / UPDATE JOB STATUS ---
 app.put('/api/admin/jobs/:jobId/status', async (req, res) => {
     const { jobId } = req.params;
     const { status } = req.body; 
@@ -1150,10 +1178,10 @@ app.put('/api/admin/jobs/:jobId/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating job status" });
     }
 });
-// --- ADMIN: UPDATE EMPLOYER STATUS ---
+
 app.put('/api/admin/employers/:dbId/status', async (req, res) => {
     const { dbId } = req.params;
-    const { status } = req.body; // 'approved', 'rejected', 'blacklisted'
+    const { status } = req.body;
     
     try {
         let dbStatus = status;
@@ -1206,9 +1234,174 @@ app.get('/api/admin/candidates', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+app.get('/api/admin/events/:eventId/crowd-monitoring', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        const query = `
+            SELECT 
+                e.id as employer_id,
+                e.company_name as "companyName",
+                COUNT(q.id) FILTER (WHERE q.status = 'waiting') as "waitingCount",
+                COUNT(q.id) FILTER (WHERE q.status = 'called') as "calledCount",
+                COUNT(q.id) FILTER (WHERE q.status = 'completed') as "completedCount"
+            FROM employers e
+            JOIN jobs j ON j.employer_id = e.id
+            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
+            WHERE j.event_id = $1
+            GROUP BY e.id, e.company_name
+            ORDER BY "waitingCount" DESC;
+        `;
+        const result = await pool.query(query, [eventId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching crowd monitoring stats:", error);
+        res.status(500).json({ success: false, message: "Server error fetching crowd data." });
+    }
+});
+
+app.get('/api/admin/events/history', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT id, name, event_date, event_type, city, venue_address, status, description,
+                   (SELECT COUNT(DISTINCT employer_id) FROM employer_event_stalls WHERE event_id = events.id) as total_companies,
+                   (SELECT COUNT(*) FROM event_attendance WHERE event_id = events.id) as total_attendance
+            FROM events 
+            WHERE LOWER(status) = 'completed'
+            ORDER BY event_date DESC
+        `);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching event history:", error);
+        res.status(500).json({ success: false, message: "Server error fetching event history." });
+    }
+});
+
+app.get('/api/admin/events/:eventId/export', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        const eventRes = await pool.query("SELECT * FROM events WHERE id = $1", [eventId]);
+        if (eventRes.rows.length === 0) return res.status(404).json({ success: false, message: "Event not found." });
+        const event = eventRes.rows[0];
+
+        const statsRes = await pool.query(`
+            SELECT 
+                COALESCE(e.company_name, 'N/A') as company_name,
+                COALESCE(j.title, 'N/A') as job_title,
+                COUNT(DISTINCT ja.id) as total_applications,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status = 'Shortlisted') as shortlisted_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%Interview%') as interviewed_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status IN ('Hired', 'Offered')) as hired_count,
+                COUNT(DISTINCT q.id) as total_queue_tokens
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.id
+            LEFT JOIN job_applications ja ON ja.job_id = j.id
+            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
+            WHERE j.event_id = $1
+            GROUP BY e.company_name, j.title
+            ORDER BY e.company_name ASC;
+        `, [eventId]);
+
+        const safeEventName = (event.name || 'Event').replace(/[^a-zA-Z0-9]/g, '_');
+        let csvRows = [];
+        csvRows.push(`Event Report: "${event.name}"`);
+        csvRows.push(`Date: ${event.event_date ? new Date(event.event_date).toISOString().split('T')[0] : 'N/A'}, Location: ${event.city || 'N/A'}`);
+        csvRows.push(``);
+        csvRows.push(`Company Name,Job Title,Total Applications,Shortlisted,Interviewed,Total Hired/Offered,Queue Tokens`);
+
+        statsRes.rows.forEach(row => {
+            csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted_count},${row.interviewed_count},${row.hired_count},${row.total_queue_tokens}`);
+        });
+
+        const csvString = csvRows.join('\n');
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=${safeEventName}_Master_Report.csv`);
+        res.status(200).send(csvString);
+    } catch (error) {
+        console.error("❌ Error exporting event report:", error);
+        res.status(500).json({ success: false, message: "Server error generating report." });
+    }
+});
+
+app.post('/api/admin/events/:eventId/venue/blocks', async (req, res) => {
+    const { eventId } = req.params;
+    const { kind, name, code } = req.body;
+
+    if (!name || !code) {
+        return res.status(400).json({ success: false, message: "Block Name and Code are required." });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO venue_blocks (event_id, type, name, code) 
+             VALUES ($1, $2, $3, $4) 
+             RETURNING id, type as kind, name, code`,
+            [eventId, kind || 'Block', name.trim(), code.trim().toUpperCase()]
+        );
+
+        res.status(201).json({ 
+            success: true, 
+            message: "Venue block created successfully!", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error creating venue block:", error);
+        res.status(500).json({ success: false, message: "Database error creating block: " + error.message });
+    }
+});
 
 // ==========================================
-// 7. EMPLOYER PORTAL APIS (WITH SMART ID / EMAIL RESOLUTION)
+// ADMIN TEAM & IAM MANAGEMENT APIS
+// ==========================================
+app.post('/api/admin/team', async (req, res) => {
+    const { fullName, email, password, role, permissions } = req.body;
+    if (!fullName || !email || !password || !role) {
+        return res.status(400).json({ success: false, message: "Missing required fields." });
+    }
+    if (role === 'Admin') {
+        return res.status(400).json({ success: false, message: "The Master Admin role is exclusive to the BCC CEO and cannot be assigned." });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const result = await pool.query(
+            `INSERT INTO admin_team (full_name, email, password, role, permissions, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())
+             RETURNING id, full_name, email, role`,
+            [fullName.trim(), email.trim().toLowerCase(), hashedPassword, role, JSON.stringify(permissions || {})]
+        );
+
+        res.status(201).json({ success: true, message: "Admin team member created successfully.", data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error adding admin team member:", error);
+        res.status(500).json({ success: false, message: "Server error saving team member." });
+    }
+});
+
+app.get('/api/admin/team', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT id, full_name as name, email, role, created_at FROM admin_team ORDER BY created_at DESC");
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching admin team:", error);
+        res.status(500).json({ success: false, message: "Server error fetching team members." });
+    }
+});
+
+app.delete('/api/admin/team/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query("DELETE FROM admin_team WHERE id = $1", [id]);
+        res.json({ success: true, message: "Team member deleted successfully." });
+    } catch (error) {
+        console.error("❌ Error deleting team member:", error);
+        res.status(500).json({ success: false, message: "Server error deleting member." });
+    }
+});
+
+// ==========================================
+// 7. EMPLOYER PORTAL APIS
 // ==========================================
 app.get('/api/employer/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
@@ -1253,7 +1446,7 @@ app.get('/api/employer/:employerId/dashboard', async (req, res) => {
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
-// --- APPLY FOR EMPLOYER EVENT STALL ---
+
 app.post('/api/employer/event-stalls/apply', async (req, res) => {
     const { employerId, eventId } = req.body;
     
@@ -1263,7 +1456,6 @@ app.post('/api/employer/event-stalls/apply', async (req, res) => {
 
     try {
         let dbEmpId = employerId;
-        // If local storage saved an email or string instead of numeric ID:
         if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
             const lookup = await pool.query(
                 "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", 
@@ -1276,7 +1468,6 @@ app.post('/api/employer/event-stalls/apply', async (req, res) => {
             }
         }
 
-        // Check if already applied
         const duplicate = await pool.query(
             "SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2",
             [dbEmpId, eventId]
@@ -1286,7 +1477,6 @@ app.post('/api/employer/event-stalls/apply', async (req, res) => {
             return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
         }
 
-        // Insert new application
         await pool.query(
             `INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) 
              VALUES ($1, $2, 'pending', 'pending', NOW())`,
@@ -1299,6 +1489,7 @@ app.post('/api/employer/event-stalls/apply', async (req, res) => {
         return res.status(500).json({ success: false, message: "Database Error: " + error.message });
     }
 });
+
 app.get('/api/employer/:employerId/analytics', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1353,12 +1544,10 @@ app.get('/api/employer/:employerId/analytics', async (req, res) => {
     }
 });
 
-// --- GET EMPLOYER PROFILE ---
 app.get('/api/employer/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        // If employerId is an email or text string, look up its actual database numeric ID
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query(
                 "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", 
@@ -1392,7 +1581,7 @@ app.get('/api/employer/profile/:employerId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
-// --- UPDATE EMPLOYER PROFILE PHOTO ---
+
 app.put('/api/employer/profile/:employerId/photo', async (req, res) => {
     const { employerId } = req.params;
     const { photoUrl } = req.body;
@@ -1414,7 +1603,7 @@ app.put('/api/employer/profile/:employerId/photo', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error saving photo." });
     }
 });
-// --- GET EMPLOYER EVENT STALL APPLICATIONS ---
+
 app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1438,11 +1627,10 @@ app.get('/api/employer/:employerId/event-stalls', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching event stalls." });
     }
 });
+
 // ==========================================
 // 8. EMPLOYER JOBS MANAGEMENT
 // ==========================================
-
-// --- EMPLOYER: GET ALL JOBS POSTED BY EMPLOYER ---
 app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1463,7 +1651,6 @@ app.get('/api/employer/:employerId/jobs-list', async (req, res) => {
     }
 });
 
-// --- EMPLOYER: POST A NEW JOB ---
 app.post('/api/employer/:employerId/jobs', async (req, res) => {
     const { employerId } = req.params;
     const { title, jobType, location, qualification, experience, salary, skills, vacancies, description, event_id } = req.body;
@@ -1480,7 +1667,6 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
             return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // Feature 14: Auto-approve if it is tied to an event
         const initialStatus = event_id ? 'approved' : 'pending';
 
         const insertQuery = `
@@ -1508,7 +1694,6 @@ app.post('/api/employer/:employerId/jobs', async (req, res) => {
     }
 });
 
-// --- EMPLOYER: EDIT EXISTING JOB ---
 app.put('/api/employer/jobs/:jobId', async (req, res) => {
     const { jobId } = req.params;
     const { title, jobType, location, qualification, experience, salary, skills, vacancies, description, event_id } = req.body;
@@ -1537,7 +1722,6 @@ app.put('/api/employer/jobs/:jobId', async (req, res) => {
     }
 });
 
-// --- EMPLOYER: DELETE JOB ---
 app.delete('/api/employer/jobs/:jobId', async (req, res) => {
     try {
         await pool.query("DELETE FROM jobs WHERE id = $1", [req.params.jobId]);
@@ -1547,7 +1731,6 @@ app.delete('/api/employer/jobs/:jobId', async (req, res) => {
     }
 });
 
-// --- GET CANDIDATES REVIEWED COUNT FOR SPECIFIC EMPLOYER ---
 app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1573,7 +1756,6 @@ app.get('/api/employer/:employerId/candidates-reviewed-count', async (req, res) 
     }
 });
 
-// --- 1-CLICK JOB REACTIVATION ---
 app.put('/api/employer/jobs/:jobId/reactivate', async (req, res) => {
     const { jobId } = req.params;
     const { employerId } = req.body;
@@ -1593,7 +1775,7 @@ app.put('/api/employer/jobs/:jobId/reactivate', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error reactivating job." });
     }
 });
-// --- GET SUB-HR MEMBERS FOR AN EMPLOYER ---
+
 app.get('/api/employer/:employerId/hrs', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -1615,7 +1797,6 @@ app.get('/api/employer/:employerId/hrs', async (req, res) => {
     }
 });
 
-// --- ADD A SUB-HR MEMBER (MAX 3 LIMIT) ---
 app.post('/api/employer/:employerId/hrs', async (req, res) => {
     const { employerId } = req.params;
     const { fullName, email, password } = req.body;
@@ -1632,7 +1813,6 @@ app.post('/api/employer/:employerId/hrs', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // Check current count (Limit 3)
         const countCheck = await pool.query("SELECT COUNT(*) FROM employer_hrs WHERE employer_id = $1", [dbEmpId]);
         if (parseInt(countCheck.rows[0].count) >= 3) {
             return res.status(400).json({ success: false, message: "Maximum limit of 3 HR members reached." });
@@ -1659,7 +1839,6 @@ app.post('/api/employer/:employerId/hrs', async (req, res) => {
     }
 });
 
-// --- DELETE A SUB-HR MEMBER ---
 app.delete('/api/employer/hrs/:hrId', async (req, res) => {
     const { hrId } = req.params;
     try {
@@ -1673,364 +1852,10 @@ app.delete('/api/employer/hrs/:hrId', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error removing HR member." });
     }
 });
-// --- GET EMPLOYER EVENT QUEUE ---
-app.get('/api/employer/:employerId/events/:eventId/queue', async (req, res) => {
-    const { employerId, eventId } = req.params;
-    const { jobId } = req.query;
 
-    try {
-        let query = `
-            SELECT q.id, q.token_number as "tokenNumber", q.status, q.called_at as "calledAt", 
-                   q.timer_expires_at as "timerExpiresAt", c.full_name as "candidateName", 
-                   c.phone, c.qualification_level as qualification, j.title as "jobTitle"
-            FROM event_queues q
-            JOIN candidates c ON q.candidate_id = c.id
-            JOIN jobs j ON q.job_id = j.id
-            WHERE q.event_id = $1
-        `;
-        let params = [eventId];
-
-        if (jobId) {
-            query += ` AND q.job_id = $2`;
-            params.push(jobId);
-        }
-
-        query += ` ORDER BY q.token_number ASC`;
-
-        const result = await pool.query(query, params);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching employer queue:", error);
-        res.status(500).json({ success: false, message: "Server error fetching queue." });
-    }
-});
-
-// --- EMPLOYER: CALL NEXT CANDIDATE (PHASE 4 - 5 MIN TIMER) ---
-app.post('/api/employer/queue/call-next', async (req, res) => {
-    const { eventId, jobId, employerId } = req.body;
-
-    if (!eventId || !jobId) {
-        return res.status(400).json({ success: false, message: "Missing eventId or jobId." });
-    }
-
-    try {
-        // 1. Check if someone is already currently 'called'
-        const activeCalled = await pool.query(
-            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
-            [eventId, jobId]
-        );
-
-        if (activeCalled.rows.length > 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `Token #${activeCalled.rows[0].token_number} is already active. Complete or mark them as No-Show first.` 
-            });
-        }
-
-        // 2. Find the next waiting candidate
-        const nextInLine = await pool.query(
-            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
-            [eventId, jobId]
-        );
-
-        if (nextInLine.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "No candidates currently waiting in queue." });
-        }
-
-        const targetId = nextInLine.rows[0].id;
-        const targetToken = nextInLine.rows[0].token_number;
-
-        // 3. Update to 'called' and set 5-minute timer expiration
-        const updated = await pool.query(
-            `UPDATE event_queues 
-             SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
-             WHERE id = $1 
-             RETURNING id, token_number, status, timer_expires_at as "timerExpiresAt"`,
-            [targetId]
-        );
-
-        res.json({ 
-            success: true, 
-            message: `Called Token #${targetToken}! 5-minute timer started.`, 
-            data: updated.rows[0] 
-        });
-    } catch (error) {
-        console.error("❌ Error calling next candidate:", error);
-        res.status(500).json({ success: false, message: "Server error calling next candidate." });
-    }
-});
-// --- ADMIN: LIVE CROWD MONITORING & STALL QUEUE STATS ---
-app.get('/api/admin/events/:eventId/crowd-monitoring', async (req, res) => {
-    const { eventId } = req.params;
-    try {
-        const query = `
-            SELECT 
-                e.id as employer_id,
-                e.company_name as "companyName",
-                COUNT(q.id) FILTER (WHERE q.status = 'waiting') as "waitingCount",
-                COUNT(q.id) FILTER (WHERE q.status = 'called') as "calledCount",
-                COUNT(q.id) FILTER (WHERE q.status = 'completed') as "completedCount"
-            FROM employers e
-            JOIN jobs j ON j.employer_id = e.id
-            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
-            WHERE j.event_id = $1
-            GROUP BY e.id, e.company_name
-            ORDER BY "waitingCount" DESC;
-        `;
-        const result = await pool.query(query, [eventId]);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching crowd monitoring stats:", error);
-        res.status(500).json({ success: false, message: "Server error fetching crowd data." });
-    }
-});
-// --- ADMIN: GET COMPLETED EVENTS FOR HISTORY ---
-app.get('/api/admin/events/history', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT id, name, event_date, event_type, city, venue_address, status, description,
-                   (SELECT COUNT(DISTINCT employer_id) FROM employer_event_stalls WHERE event_id = events.id) as total_companies,
-                   (SELECT COUNT(*) FROM event_attendance WHERE event_id = events.id) as total_attendance
-            FROM events 
-            WHERE LOWER(status) = 'completed'
-            ORDER BY event_date DESC
-        `);
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching event history:", error);
-        res.status(500).json({ success: false, message: "Server error fetching event history." });
-    }
-});
-
-// --- ADMIN: EXPORT COMPREHENSIVE EVENT REPORT (CSV) ---
-app.get('/api/admin/events/:eventId/export', async (req, res) => {
-    const { eventId } = req.params;
-    try {
-        // 1. Fetch Event Meta
-        const eventRes = await pool.query("SELECT * FROM events WHERE id = $1", [eventId]);
-        if (eventRes.rows.length === 0) return res.status(404).json({ success: false, message: "Event not found." });
-        const event = eventRes.rows[0];
-
-        // 2. Fetch Aggregated Statistics & Data
-        const statsRes = await pool.query(`
-            SELECT 
-                COALESCE(e.company_name, 'N/A') as company_name,
-                COALESCE(j.title, 'N/A') as job_title,
-                COUNT(DISTINCT ja.id) as total_applications,
-                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status = 'Shortlisted') as shortlisted_count,
-                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%Interview%') as interviewed_count,
-                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status IN ('Hired', 'Offered')) as hired_count,
-                COUNT(DISTINCT q.id) as total_queue_tokens
-            FROM jobs j
-            JOIN employers e ON j.employer_id = e.id
-            LEFT JOIN job_applications ja ON ja.job_id = j.id
-            LEFT JOIN event_queues q ON q.job_id = j.id AND q.event_id = $1
-            WHERE j.event_id = $1
-            GROUP BY e.company_name, j.title
-            ORDER BY e.company_name ASC;
-        `, [eventId]);
-
-        // 3. Construct CSV Data
-        const safeEventName = (event.name || 'Event').replace(/[^a-zA-Z0-9]/g, '_');
-        let csvRows = [];
-        csvRows.push(`Event Report: "${event.name}"`);
-        csvRows.push(`Date: ${event.event_date ? new Date(event.event_date).toISOString().split('T')[0] : 'N/A'}, Location: ${event.city || 'N/A'}`);
-        csvRows.push(``);
-        csvRows.push(`Company Name,Job Title,Total Applications,Shortlisted,Interviewed,Total Hired/Offered,Queue Tokens`);
-
-        statsRes.rows.forEach(row => {
-            csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted_count},${row.interviewed_count},${row.hired_count},${row.total_queue_tokens}`);
-        });
-
-        const csvString = csvRows.join('\n');
-
-        res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename=${safeEventName}_Master_Report.csv`);
-        res.status(200).send(csvString);
-    } catch (error) {
-        console.error("❌ Error exporting event report:", error);
-        res.status(500).json({ success: false, message: "Server error generating report." });
-    }
-});
-// --- ADMIN: CREATE VENUE BLOCK ---
-app.post('/api/admin/events/:eventId/venue/blocks', async (req, res) => {
-    const { eventId } = req.params;
-    const { kind, name, code } = req.body;
-
-    if (!name || !code) {
-        return res.status(400).json({ success: false, message: "Block Name and Code are required." });
-    }
-
-    try {
-        const result = await pool.query(
-            `INSERT INTO venue_blocks (event_id, type, name, code) 
-             VALUES ($1, $2, $3, $4) 
-             RETURNING id, type as kind, name, code`,
-            [eventId, kind || 'Block', name.trim(), code.trim().toUpperCase()]
-        );
-
-        res.status(201).json({ 
-            success: true, 
-            message: "Venue block created successfully!", 
-            data: result.rows[0] 
-        });
-    } catch (error) {
-        console.error("❌ Error creating venue block:", error);
-        res.status(500).json({ success: false, message: "Database error creating block: " + error.message });
-    }
-});
 // ==========================================
-// ADMIN TEAM & IAM MANAGEMENT APIS (Feature 10)
+// 9. EMPLOYER CANDIDATES & APPLICATIONS APIS
 // ==========================================
-app.post('/api/admin/team', async (req, res) => {
-    const { fullName, email, password, role, permissions } = req.body;
-    if (!fullName || !email || !password || !role) {
-        return res.status(400).json({ success: false, message: "Missing required fields." });
-    }
-    try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const result = await pool.query(
-            `INSERT INTO admin_team (full_name, email, password, role, permissions, created_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
-             RETURNING id, full_name, email, role`,
-            [fullName.trim(), email.trim().toLowerCase(), hashedPassword, role, JSON.stringify(permissions || {})]
-        );
-
-        res.status(201).json({ success: true, message: "Admin team member created successfully.", data: result.rows[0] });
-    } catch (error) {
-        console.error("❌ Error adding admin team member:", error);
-        res.status(500).json({ success: false, message: "Server error saving team member." });
-    }
-});
-
-app.get('/api/admin/team', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, full_name as name, email, role, created_at FROM admin_team ORDER BY created_at DESC");
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching admin team:", error);
-        res.status(500).json({ success: false, message: "Server error fetching team members." });
-    }
-});
-// ==========================================
-// ADMIN TEAM & IAM MANAGEMENT APIS (Feature 10)
-// ==========================================
-app.post('/api/admin/team', async (req, res) => {
-    const { fullName, email, password, role, permissions } = req.body;
-    if (!fullName || !email || !password || !role) {
-        return res.status(400).json({ success: false, message: "Missing required fields." });
-    }
-    if (role === 'Admin') {
-        return res.status(400).json({ success: false, message: "The Master Admin role is exclusive to the BCC CEO and cannot be assigned." });
-    }
-    try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const result = await pool.query(
-            `INSERT INTO admin_team (full_name, email, password, role, permissions, created_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
-             RETURNING id, full_name, email, role`,
-            [fullName.trim(), email.trim().toLowerCase(), hashedPassword, role, JSON.stringify(permissions || {})]
-        );
-
-        res.status(201).json({ success: true, message: "Admin team member created successfully.", data: result.rows[0] });
-    } catch (error) {
-        console.error("❌ Error adding admin team member:", error);
-        res.status(500).json({ success: false, message: "Server error saving team member." });
-    }
-});
-
-app.get('/api/admin/team', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, full_name as name, email, role, created_at FROM admin_team ORDER BY created_at DESC");
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching admin team:", error);
-        res.status(500).json({ success: false, message: "Server error fetching team members." });
-    }
-});
-
-app.delete('/api/admin/team/:id', async (req, res) => {
-    const { id } = req.params;
-    try {
-        await pool.query("DELETE FROM admin_team WHERE id = $1", [id]);
-        res.json({ success: true, message: "Team member deleted successfully." });
-    } catch (error) {
-        console.error("❌ Error deleting team member:", error);
-        res.status(500).json({ success: false, message: "Server error deleting member." });
-    }
-});
-// ==========================================
-// EXPORT EVENT REPORT CSV ROUTE
-// ==========================================
-app.get('/api/admin/events/:id/export', async (req, res) => {
-    const eventId = req.params.id;
-    try {
-        // Fetch event using flexible column checks
-        const eventResult = await pool.query("SELECT * FROM events WHERE id = $1", [eventId]);
-        if (eventResult.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Event not found" });
-        }
-        const ev = eventResult.rows[0];
-
-        // Fallbacks for column names across different schemas
-        const eventName = ev.name || ev.event_name || "Udyoga Mela";
-        const rawDate = ev.event_date || ev.date || ev.created_at;
-        const eventDate = rawDate ? new Date(rawDate).toLocaleDateString('en-IN') : "28/07/2026";
-        const eventLocation = ev.city || ev.location || ev.venue_address || "Hubballi";
-
-        // Fetch jobs and metrics
-        const jobsResult = await pool.query(
-            `SELECT j.title as job_title, 
-                    COALESCE(e.company_name, 'Direct Employer') as company_name,
-                    COUNT(app.id) as total_applications,
-                    SUM(CASE WHEN app.status = 'shortlisted' THEN 1 ELSE 0 END) as shortlisted,
-                    SUM(CASE WHEN app.status = 'interviewed' THEN 1 ELSE 0 END) as interviewed,
-                    SUM(CASE WHEN app.status = 'hired' THEN 1 ELSE 0 END) as total_hired
-             FROM jobs j
-             LEFT JOIN employers e ON j.employer_id = e.id
-             LEFT JOIN applications app ON j.id = app.job_id
-             WHERE j.event_id = $1
-             GROUP BY j.id, j.title, e.company_name`,
-            [eventId]
-        );
-
-        let csvRows = [];
-        csvRows.push(`"Event Report:","${eventName}"`);
-        csvRows.push(`"Date:","${eventDate}","Location:","${eventLocation}"`);
-        csvRows.push(""); // Empty row
-        csvRows.push(`"Company Name","Job Title","Total Applications","Shortlisted","Interviewed","Total Hired","Queue Tokens"`);
-
-        if (jobsResult.rows.length === 0) {
-            // Mock sample row so the spreadsheet looks populated immediately if no job applications exist yet
-            csvRows.push(`"Bosch Ltd","CNC Operator",12,5,2,1,18`);
-            csvRows.push(`"Infosys","Software Developer",24,10,4,2,24`);
-        } else {
-            jobsResult.rows.forEach(row => {
-                csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted},${row.interviewed},${row.total_hired},0`);
-            });
-        }
-
-        const csvString = csvRows.join("\n");
-
-        res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${eventName.replace(/\s+/g, '_')}_Report.csv"`);
-        
-        return res.status(200).send(csvString);
-
-    } catch (error) {
-        console.error("❌ Error exporting event report:", error);
-        return res.status(500).json({ success: false, message: "Server error generating report." });
-    }
-});
-// ==========================================
-// EMPLOYER CANDIDATES & APPLICATIONS APIS
-// ==========================================
-
-// 1. Get job options for the employer dropdown
 app.get('/api/employer/:employerId/job-options', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -2052,8 +1877,6 @@ app.get('/api/employer/:employerId/job-options', async (req, res) => {
     }
 });
 
-// 2. Get applicants for a specific job posting
-// --- AUTOMATIC APPLICANT FETCHING FOR EMPLOYER PANEL ---
 app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
     const { jobId } = req.params;
     try {
@@ -2085,10 +1908,8 @@ app.get('/api/employer/jobs/:jobId/applications', async (req, res) => {
     }
 });
 
-// 3. Update candidate application status (Shortlisted, Interview, Hired, etc.)
-
 // ==========================================
-// SERVER STARTUP
+// 10. SERVER STARTUP
 // ==========================================
 app.listen(PORT, () => {
     console.log(`🚀 Backend server running on port ${PORT}`);
