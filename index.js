@@ -1357,6 +1357,82 @@ app.post('/api/admin/events/:eventId/venue/blocks', async (req, res) => {
     }
 });
 
+// =========================================================================
+// ADDED ENDPOINTS FOR CREATING & DELETING STALLS AND SECTIONS (ROOMS)
+// =========================================================================
+
+// --- ADMIN: CREATE VENUE ROOM / SECTION ---
+app.post('/api/admin/events/:eventId/venue/rooms', async (req, res) => {
+    const { blockId, name, code } = req.body;
+    if (!blockId || !name || !code) {
+        return res.status(400).json({ success: false, message: "Block ID, Room Name, and Code are required." });
+    }
+    try {
+        const result = await pool.query(
+            `INSERT INTO venue_rooms (block_id, name, code) 
+             VALUES ($1, $2, $3) 
+             RETURNING id, name, code`,
+            [blockId, name.trim(), code.trim().toUpperCase()]
+        );
+        res.status(201).json({ 
+            success: true, 
+            message: "Venue room/section created successfully!", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error creating venue room:", error);
+        res.status(500).json({ success: false, message: "Database error creating room: " + error.message });
+    }
+});
+
+// --- ADMIN: CREATE STALL ---
+app.post('/api/admin/events/:eventId/venue/stalls', async (req, res) => {
+    const { eventId } = req.params;
+    const { blockId, roomId, code } = req.body;
+
+    if (!code || !blockId) {
+        return res.status(400).json({ success: false, message: "Block ID and Stall Code are required." });
+    }
+
+    try {
+        // Check for duplicate stall code in the same event
+        const duplicate = await pool.query(
+            "SELECT id FROM venue_stalls WHERE event_id = $1 AND UPPER(code) = $2",
+            [eventId, code.trim().toUpperCase()]
+        );
+        if (duplicate.rows.length > 0) {
+            return res.status(400).json({ success: false, message: `Stall code "${code}" already exists for this event.` });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO venue_stalls (event_id, block_id, room_id, code, employer_id) 
+             VALUES ($1, $2, $3, $4, NULL) 
+             RETURNING id, code`,
+            [eventId, blockId, roomId || null, code.trim().toUpperCase()]
+        );
+
+        res.status(201).json({ 
+            success: true, 
+            message: "Stall created successfully!", 
+            data: result.rows[0] 
+        });
+    } catch (error) {
+        console.error("❌ Error creating stall:", error);
+        res.status(500).json({ success: false, message: "Database error creating stall: " + error.message });
+    }
+});
+
+// --- ADMIN: DELETE STALL ---
+app.delete('/api/admin/stalls/:id', async (req, res) => {
+    try {
+        await pool.query("DELETE FROM venue_stalls WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Stall deleted successfully!" });
+    } catch (error) {
+        console.error("❌ Error deleting stall:", error);
+        res.status(500).json({ success: false, message: "Server error deleting stall." });
+    }
+});
+
 // ==========================================
 // ADMIN TEAM & IAM MANAGEMENT APIS
 // ==========================================
