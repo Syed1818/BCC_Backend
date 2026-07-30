@@ -275,14 +275,20 @@ router.get('/stall-applications', async (req, res) => {
         const result = await pool.query(`
             SELECT es.id, es.status, es.payment_status, es.applied_at, es.roles_to_hire as "rolesToHire", es.vacancies_count as "vacanciesCount",
                    e.company_name as "employerName", e.email as "contactEmail", ev.id as "eventId", ev.name as "eventName", s.code as "allocatedStall",
-                   e.id as "employer_id"  -- 👈 ADD THIS LINE
+                   e.id as "employer_id" 
             FROM employer_event_stalls es
-            JOIN employers e ON es.employer_id = e.id JOIN events ev ON es.event_id = ev.id
-            LEFT JOIN venue_stalls s ON s.employer_id = e.id AND s.event_id = ev.id ORDER BY es.applied_at DESC
+            JOIN employers e ON es.employer_id = e.id 
+            JOIN events ev ON es.event_id = ev.id
+            LEFT JOIN venue_stalls s ON s.employer_id = e.id AND s.event_id = ev.id 
+            ORDER BY es.applied_at DESC
         `);
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("Error fetching applications:", error);
+        res.status(500).json({ success: false }); 
+    }
 });
+
 // --- JOBS & APPROVALS ---
 router.get('/jobs', async (req, res) => {
     try {
