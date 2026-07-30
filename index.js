@@ -591,12 +591,17 @@ app.put('/api/candidate/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// --- CANDIDATE: GET GLOBAL JOB BOARD (EXCLUDING EVENT-SPECIFIC JOBS) ---
 app.get('/api/candidate/:id/jobs', async (req, res) => {
     try {
         const candidateRes = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
         if (candidateRes.rows.length === 0) return res.status(404).json({ success: false });
         const candidate = candidateRes.rows[0];
-        const jobsRes = await pool.query("SELECT * FROM jobs WHERE status = 'approved'");
+
+        // Ensure jobs tied to an event (event_id IS NOT NULL) are excluded from the main job board
+        const jobsRes = await pool.query(
+            "SELECT * FROM jobs WHERE status = 'approved' AND (event_id IS NULL OR event_id::text = '0')"
+        );
         
         const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidate.id]);
         const savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
@@ -635,7 +640,9 @@ app.get('/api/candidate/:id/jobs', async (req, res) => {
         }).sort((a, b) => b.matchScore - a.matchScore);
 
         res.json({ success: true, data: matchedJobs });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        res.status(500).json({ success: false }); 
+    }
 });
 
 app.post('/api/applications/apply', async (req, res) => {
