@@ -11,12 +11,12 @@ router.post('/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // Mandatory Compliance Validation (Rows 46 & 52)
+        // Enforce Checkbox Confirmations
         if (!data.tncAccepted || !data.declarationAccepted) {
             return res.status(400).json({ success: false, message: "You must accept the Terms & Conditions and the Candidate Declaration to proceed." });
         }
 
-        // Enforce Password Strength Server-Side (Row 47)
+        // Enforce Password Strength Server-Side
         const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^._-])[A-Za-z\d@$!%*?&#^._-]{8,}$/;
         if (!data.password || !passwordRegex.test(data.password)) {
             return res.status(400).json({
@@ -35,11 +35,6 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
-        // Optional Aadhaar Validation (Row 7)
-        if (data.aadhaar && data.aadhaar.length > 0 && data.aadhaar.length !== 12) {
-             return res.status(400).json({ success: false, message: "Aadhaar Number must be exactly 12 digits." });
-        }
-
         const userExists = await pool.query(
             "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
             [cleanEmail, cleanPhone]
@@ -49,7 +44,6 @@ router.post('/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
-        // Age Calculation & Validation (Row 3)
         let parsedDob = null;
         if (data.dob && typeof data.dob === 'string' && data.dob.trim() !== '' && !isNaN(Date.parse(data.dob))) {
             parsedDob = new Date(data.dob);
@@ -66,9 +60,11 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
+        // Gender mapping - the frontend already handles the "Others" structure correctly
+        const resolvedGender = data.gender || null;
         const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
 
-        // Hear About Us Formatting (Rows 49 & 50)
+        // Map "Hear About Us"
         let resolvedHearAboutUs = data.hearAboutUs || null;
         if (data.hearAboutUs === "Social Media" && data.socialMediaPlatform) {
             resolvedHearAboutUs = `Social Media - ${data.socialMediaPlatform}`;
@@ -98,11 +94,11 @@ router.post('/candidate/register', async (req, res) => {
             cleanPhone,
             data.password,
             parsedDob,
-            data.gender || null,
+            resolvedGender,
             data.language || 'English',
             data.socialCategory || data.category || 'General Merit (GM)',
-            JSON.stringify(data.currentAddress || {}), // Store as JSONB
-            JSON.stringify(data.permanentAddress || {}), // Store as JSONB
+            JSON.stringify(data.currentAddress || {}),
+            JSON.stringify(data.permanentAddress || {}),
             data.qualification || null,
             data.yearOfPassing || null,
             data.institution || null,
@@ -113,7 +109,7 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.languagesFluent || []),
             JSON.stringify(data.skills || []),
             data.experienceType || 'Fresher',
-            data.experience || null, // Formatted as Y.M
+            data.experience || null,
             data.employmentStatus || null,
             data.currentRole || null,
             data.currentCompany || null,
@@ -124,7 +120,7 @@ router.post('/candidate/register', async (req, res) => {
             Boolean(data.willingToRelocate),
             data.preferredJobType || 'Full-time',
             data.expectedSalary || null,
-            data.aadhaar || null, // Optional 12-digit number string
+            data.aadhaar || null,
             data.hasDisability || 'No',
             JSON.stringify(data.disabilities || []),
             data.educationStatus || null,
