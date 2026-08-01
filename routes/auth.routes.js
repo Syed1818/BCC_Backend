@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 
-// --- CANDIDATE REGISTRATION (WITH F1 & F2 REQUIREMENTS) ---
+// --- CANDIDATE REGISTRATION (WITH ALL 52-ROW SPECIFICATIONS) ---
 router.post('/candidate/register', async (req, res) => {
     const data = req.body;
     try {
@@ -11,8 +11,13 @@ router.post('/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // Enforce Password Strength Server-Side (F2)
-        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^])[A-Za-z\d@$!%*?&#^]{8,}$/;
+        // Mandatory Compliance Validation (Rows 46 & 52)
+        if (!data.tncAccepted || !data.declarationAccepted) {
+            return res.status(400).json({ success: false, message: "You must accept the Terms & Conditions and the Candidate Declaration to proceed." });
+        }
+
+        // Enforce Password Strength Server-Side (Row 47)
+        const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^._-])[A-Za-z\d@$!%*?&#^._-]{8,}$/;
         if (!data.password || !passwordRegex.test(data.password)) {
             return res.status(400).json({
                 success: false,
@@ -30,6 +35,11 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
+        // Optional Aadhaar Validation (Row 7)
+        if (data.aadhaar && data.aadhaar.length > 0 && data.aadhaar.length !== 12) {
+             return res.status(400).json({ success: false, message: "Aadhaar Number must be exactly 12 digits." });
+        }
+
         const userExists = await pool.query(
             "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
             [cleanEmail, cleanPhone]
@@ -39,6 +49,7 @@ router.post('/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
+        // Age Calculation & Validation (Row 3)
         let parsedDob = null;
         if (data.dob && typeof data.dob === 'string' && data.dob.trim() !== '' && !isNaN(Date.parse(data.dob))) {
             parsedDob = new Date(data.dob);
@@ -55,23 +66,28 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
-        // Resolve "Others" Custom Gender Details (F1)
-        const resolvedGender = (data.gender === 'Others' && data.customGender && data.customGender.trim() !== '')
-            ? `Others - ${data.customGender.trim()}`
-            : (data.gender || null);
-
         const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
+
+        // Hear About Us Formatting (Rows 49 & 50)
+        let resolvedHearAboutUs = data.hearAboutUs || null;
+        if (data.hearAboutUs === "Social Media" && data.socialMediaPlatform) {
+            resolvedHearAboutUs = `Social Media - ${data.socialMediaPlatform}`;
+        } else if (data.hearAboutUs === "Other" && data.hearAboutOther) {
+            resolvedHearAboutUs = `Other - ${data.hearAboutOther}`;
+        }
 
         const insertQuery = `
             INSERT INTO candidates (
                 unique_id, full_name, email, phone, password, dob, gender, preferred_language, category,
-                pincode, state, district, taluk, mla_constituency, mp_constituency, gram_panchayat,
+                current_address, permanent_address,
                 highest_qualification, year_of_passing, institution, school_name, course, specialization, percentage_cgpa, languages_fluent,
                 skills, experience_type, years_of_experience, employment_status, current_job_role, current_company,
-                resume_file_name, certifications, preferred_roles, preferred_locations, willing_to_relocate, preferred_job_type, expected_salary, status, account_status, created_at
+                resume_file_name, certifications, preferred_roles, preferred_locations, willing_to_relocate, preferred_job_type, expected_salary,
+                aadhaar_number, has_disability, disabilities_list, education_status, opportunities, hear_about_us, referral_code, tnc_accepted, declaration_accepted,
+                status, account_status, created_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-                $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, 'Pending', 'Verified', NOW()
+                $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, 'Pending', 'Verified', NOW()
             ) RETURNING unique_id;
         `;
 
@@ -82,16 +98,11 @@ router.post('/candidate/register', async (req, res) => {
             cleanPhone,
             data.password,
             parsedDob,
-            resolvedGender,
+            data.gender || null,
             data.language || 'English',
             data.socialCategory || data.category || 'General Merit (GM)',
-            data.pincode || null,
-            data.state || null,
-            data.district || null,
-            data.taluk || null,
-            data.mla || null,
-            data.mp || null,
-            data.gramPanchayat || null,
+            JSON.stringify(data.currentAddress || {}), // Store as JSONB
+            JSON.stringify(data.permanentAddress || {}), // Store as JSONB
             data.qualification || null,
             data.yearOfPassing || null,
             data.institution || null,
@@ -102,7 +113,7 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.languagesFluent || []),
             JSON.stringify(data.skills || []),
             data.experienceType || 'Fresher',
-            data.yearsOfExperience || null,
+            data.experience || null, // Formatted as Y.M
             data.employmentStatus || null,
             data.currentRole || null,
             data.currentCompany || null,
@@ -112,7 +123,16 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.preferredLocations || []),
             Boolean(data.willingToRelocate),
             data.preferredJobType || 'Full-time',
-            data.expectedSalary || null
+            data.expectedSalary || null,
+            data.aadhaar || null, // Optional 12-digit number string
+            data.hasDisability || 'No',
+            JSON.stringify(data.disabilities || []),
+            data.educationStatus || null,
+            JSON.stringify(data.opportunities || []),
+            resolvedHearAboutUs,
+            data.referralCode || null,
+            Boolean(data.tncAccepted),
+            Boolean(data.declarationAccepted)
         ];
 
         const result = await pool.query(insertQuery, values);
