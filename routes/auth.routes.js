@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
 
-// --- CANDIDATE REGISTRATION (WITH FAIL-SAFE BYPASS) ---
+// --- CANDIDATE REGISTRATION ---
 router.post('/candidate/register', async (req, res) => {
     const data = req.body;
     
@@ -41,7 +41,11 @@ router.post('/candidate/register', async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(data.password, salt);
 
-        const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
+        // GENERATE UNIQUE ID: BCC-UMP-CAN-9 DIGITS
+        const min = 100000000;
+        const max = 999999999;
+        const random9Digit = Math.floor(Math.random() * (max - min + 1)) + min;
+        const unique_id = 'BCC-UMP-CAN-' + random9Digit;
 
         const insertQuery = `
             INSERT INTO candidates (
