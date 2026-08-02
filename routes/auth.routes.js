@@ -222,5 +222,114 @@ router.post('/login', async (req, res) => {
         return res.status(500).json({ success: false, message: "Server Error: " + error.message });
     }
 });
+// =====================================================================
+// --- CANDIDATE PROFILE: FETCH & UPDATE (EXCEL SPECIFICATION MATCHED) ---
+// =====================================================================
 
+router.get('/candidate/profile/:id', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Profile not found" });
+        }
+        
+        const db = result.rows[0];
+        
+        // Map database snake_case columns back to Frontend camelCase object
+        const profileData = {
+            uniqueId: db.unique_id,
+            fullName: db.full_name,
+            fatherName: db.father_name,
+            motherName: db.mother_name,
+            profilePhoto: db.profile_photo,
+            backgroundImage: db.background_image,
+            email: db.email,
+            phone: db.phone,
+            dob: db.dob ? new Date(db.dob).toISOString().split('T')[0] : "",
+            gender: db.gender,
+            language: db.preferred_language,
+            category: db.category,
+            religion: db.religion,
+            aadhaar: db.aadhaar_number,
+            hasDisability: db.has_disability,
+            disabilities: (db.disabilities_list) ? JSON.parse(db.disabilities_list) : [],
+            udid: db.udid,
+            linkedinUrl: db.linkedin_url,
+            githubUrl: db.github_url,
+
+            // Address Parsing safely
+            currentAddress: db.current_address ? JSON.parse(db.current_address) : {},
+            permanentAddress: db.permanent_address ? JSON.parse(db.permanent_address) : {},
+
+            qualification: db.highest_qualification,
+            institution: db.institution,
+            boardUniversity: db.board_university,
+            schoolName: db.school_name,
+            course: db.course,
+            specialization: db.specialization,
+            yearOfPassing: db.year_of_passing,
+            percentage: db.percentage_cgpa,
+
+            languagesFluent: db.languages_fluent ? JSON.parse(db.languages_fluent) : [],
+            technicalSkills: db.technical_skills ? JSON.parse(db.technical_skills) : [],
+            nonTechnicalSkills: db.non_technical_skills ? JSON.parse(db.non_technical_skills) : [],
+            skillProficiencies: db.skill_proficiencies ? JSON.parse(db.skill_proficiencies) : {},
+            
+            experienceType: db.experience_type,
+            opportunities: db.opportunities ? JSON.parse(db.opportunities) : [],
+            aspirantType: db.aspirant_type,
+            preferredSectors: db.preferred_sectors ? JSON.parse(db.preferred_sectors) : [],
+            preferredRoles: db.preferred_roles ? JSON.parse(db.preferred_roles) : [],
+            preferredLocations: db.preferred_locations ? JSON.parse(db.preferred_locations) : [],
+            willingToRelocate: db.willing_to_relocate,
+            resumeFileName: db.resume_file_name
+        };
+
+        res.json({ success: true, data: profileData });
+    } catch (error) {
+        console.error("❌ Profile Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching profile." });
+    }
+});
+
+router.put('/candidate/profile/update', async (req, res) => {
+    const d = req.body;
+    try {
+        const updateQuery = `
+            UPDATE candidates SET 
+                full_name = $1, father_name = $2, mother_name = $3, profile_photo = $4, background_image = $5,
+                dob = $6, gender = $7, preferred_language = $8, category = $9, religion = $10,
+                aadhaar_number = $11, has_disability = $12, disabilities_list = $13, udid = $14,
+                linkedin_url = $15, github_url = $16, current_address = $17, permanent_address = $18,
+                highest_qualification = $19, institution = $20, board_university = $21, school_name = $22,
+                course = $23, specialization = $24, year_of_passing = $25, percentage_cgpa = $26,
+                languages_fluent = $27, technical_skills = $28, non_technical_skills = $29, skill_proficiencies = $30,
+                experience_type = $31, opportunities = $32, aspirant_type = $33, preferred_sectors = $34,
+                preferred_roles = $35, preferred_locations = $36, willing_to_relocate = $37, resume_file_name = $38
+            WHERE unique_id = $39
+        `;
+        
+        // Handle ID Redaction safely
+        const safeAadhaar = (d.aadhaar && d.aadhaar.length === 12) ? "[Aadhaar Redacted]" : d.aadhaar;
+
+        const values = [
+            d.fullName, d.fatherName, d.motherName, d.profilePhoto, d.backgroundImage,
+            d.dob || null, d.gender, d.language, d.category, d.religion,
+            safeAadhaar, d.hasDisability, JSON.stringify(d.disabilities || []), d.udid,
+            d.linkedinUrl, d.githubUrl, JSON.stringify(d.currentAddress || {}), JSON.stringify(d.permanentAddress || {}),
+            d.qualification, d.institution, d.boardUniversity, d.schoolName,
+            d.course, d.specialization, d.yearOfPassing, d.percentage,
+            JSON.stringify(d.languagesFluent || []), JSON.stringify(d.technicalSkills || []), JSON.stringify(d.nonTechnicalSkills || []), JSON.stringify(d.skillProficiencies || {}),
+            d.experienceType, JSON.stringify(d.opportunities || []), d.aspirantType, JSON.stringify(d.preferredSectors || []),
+            JSON.stringify(d.preferredRoles || []), JSON.stringify(d.preferredLocations || []), Boolean(d.willingToRelocate), d.resumeFileName,
+            d.uniqueId
+        ];
+
+        await pool.query(updateQuery, values);
+        res.json({ success: true, message: "Profile updated successfully." });
+    } catch (error) {
+        console.error("❌ Profile Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating profile." });
+    }
+});
 module.exports = router;
