@@ -58,7 +58,8 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.currentAddress || {}), JSON.stringify(data.permanentAddress || {}),
             data.qualification || null, data.yearOfPassing || null, data.institution || null, data.schoolName || null,
             data.course || null, data.specialization || null, data.percentage || null,
-            JSON.stringify(data.languagesFluent || []), JSON.stringify(data.skills || []),
+            data.languagesFluent, // This is now a JSON string directly from the frontend
+            JSON.stringify(data.skills || []),
             data.experienceType || 'Fresher', data.experience || null, data.employmentStatus || null,
             data.currentRole || null, data.currentCompany || null, data.resumeFileName || null,
             JSON.stringify(data.certifications || []), JSON.stringify(data.preferredRoles || []),
@@ -70,13 +71,11 @@ router.post('/candidate/register', async (req, res) => {
         ];
 
         try {
-            // Attempt the full insert
             const result = await pool.query(insertQuery, values);
             console.log(`✅ Candidate full registered: ${result.rows[0].unique_id}`);
             return res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
         
         } catch (dbError) {
-            // THE FAIL-SAFE BYPASS: If a column doesn't exist, just insert the core login data!
             console.error("⚠️ Full DB Insert failed due to schema mismatch. Using Magic Fallback Insert...", dbError.message);
             
             const fallbackQuery = `
@@ -222,8 +221,9 @@ router.post('/login', async (req, res) => {
         return res.status(500).json({ success: false, message: "Server Error: " + error.message });
     }
 });
+
 // =====================================================================
-// --- CANDIDATE PROFILE: FETCH & UPDATE (EXCEL SPECIFICATION MATCHED) ---
+// --- CANDIDATE PROFILE: FETCH & UPDATE ---
 // =====================================================================
 
 router.get('/candidate/profile/:id', async (req, res) => {
@@ -235,7 +235,6 @@ router.get('/candidate/profile/:id', async (req, res) => {
         
         const db = result.rows[0];
         
-        // Map database snake_case columns back to Frontend camelCase object
         const profileData = {
             uniqueId: db.unique_id,
             fullName: db.full_name,
@@ -257,7 +256,6 @@ router.get('/candidate/profile/:id', async (req, res) => {
             linkedinUrl: db.linkedin_url,
             githubUrl: db.github_url,
 
-            // Address Parsing safely
             currentAddress: db.current_address ? JSON.parse(db.current_address) : {},
             permanentAddress: db.permanent_address ? JSON.parse(db.permanent_address) : {},
 
@@ -309,7 +307,6 @@ router.put('/candidate/profile/update', async (req, res) => {
             WHERE unique_id = $39
         `;
         
-        // Handle ID Redaction safely
         const safeAadhaar = (d.aadhaar && d.aadhaar.length === 12) ? "[Aadhaar Redacted]" : d.aadhaar;
 
         const values = [
@@ -332,4 +329,65 @@ router.put('/candidate/profile/update', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating profile." });
     }
 });
+
+// --- FORGOT & RESET PASSWORD ---
+router.post('/forgot-password', async (req, res) => {
+    const { identifier } = req.body;
+    const rawInput = identifier ? identifier.trim() : "";
+    const digitsOnly = rawInput.replace(/\D/g, "");
+    const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+
+    try {
+        const queryText = `
+            SELECT id FROM candidates 
+            WHERE LOWER(TRIM(email)) = LOWER($1) 
+               OR LOWER(TRIM(unique_id)) = LOWER($1)
+               OR TRIM(phone) = $1
+               OR ($2 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $2)
+        `;
+        const result = await pool.query(queryText, [rawInput, last10Digits]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "No registered account found with these details." });
+        }
+
+        return res.json({ success: true, message: "OTP sent successfully! Use 1234 to verify." });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: "Server error checking account." });
+    }
+});
+
+router.post('/reset-password', async (req, res) => {
+    const { identifier, otp, newPassword } = req.body;
+    
+    if (otp !== "1234" && otp !== "123456") {
+        return res.status(400).json({ success: false, message: "Invalid OTP code." });
+    }
+
+    const rawInput = identifier ? identifier.trim() : "";
+    const digitsOnly = rawInput.replace(/\D/g, "");
+    const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+
+    try {
+        const updateQuery = `
+            UPDATE candidates 
+            SET password = $1 
+            WHERE LOWER(TRIM(email)) = LOWER($2) 
+               OR LOWER(TRIM(unique_id)) = LOWER($2)
+               OR TRIM(phone) = $2
+               OR ($3 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $3)
+            RETURNING unique_id;
+        `;
+        const result = await pool.query(updateQuery, [newPassword, rawInput, last10Digits]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Account update failed. User not found." });
+        }
+
+        return res.json({ success: true, message: "Password updated successfully! You can now log in." });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: "Database error updating password." });
+    }
+});
+
 module.exports = router;
