@@ -6,8 +6,15 @@ const pool = require('../config/db');
 // --- CANDIDATE REGISTRATION (WITH FAIL-SAFE BYPASS) ---
 router.post('/candidate/register', async (req, res) => {
     const data = req.body;
+    
+    console.log("\n=============================================");
+    console.log("📥 INCOMING CANDIDATE PAYLOAD RECEIVED:");
+    console.log("=============================================");
+    console.log(JSON.stringify(data, null, 2));
+
     try {
         if (!data.fullName || (!data.email && !data.phone)) {
+            console.error("❌ Registration Blocked: Missing mandatory fields.");
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
@@ -21,6 +28,7 @@ router.post('/candidate/register', async (req, res) => {
         );
 
         if (userExists.rows.length > 0) {
+            console.error("❌ Registration Blocked: Email or Phone already exists in DB.");
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
@@ -49,7 +57,7 @@ router.post('/candidate/register', async (req, res) => {
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 
                 $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, 
                 'Pending', 'Verified', NOW()
-            ) RETURNING unique_id;
+            ) RETURNING *;
         `;
 
         const values = [
@@ -58,7 +66,7 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.currentAddress || {}), JSON.stringify(data.permanentAddress || {}),
             data.qualification || null, data.yearOfPassing || null, data.institution || null, data.schoolName || null,
             data.course || null, data.specialization || null, data.percentage || null,
-            data.languagesFluent, // This is now a JSON string directly from the frontend
+            data.languagesFluent, // Handled as JSON string directly from frontend payload
             JSON.stringify(data.skills || []),
             data.experienceType || 'Fresher', data.experience || null, data.employmentStatus || null,
             data.currentRole || null, data.currentCompany || null, data.resumeFileName || null,
@@ -72,7 +80,14 @@ router.post('/candidate/register', async (req, res) => {
 
         try {
             const result = await pool.query(insertQuery, values);
-            console.log(`✅ Candidate full registered: ${result.rows[0].unique_id}`);
+            
+            console.log("\n✅ SUCCESS: DATA STORED IN DATABASE!");
+            console.log("---------------------------------------------");
+            console.log(`Database Row Created for ID: ${result.rows[0].unique_id}`);
+            console.log(`Email Saved: ${result.rows[0].email}`);
+            console.log(`Languages Stored: ${result.rows[0].languages_fluent}`);
+            console.log("---------------------------------------------\n");
+            
             return res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
         
         } catch (dbError) {
@@ -80,17 +95,23 @@ router.post('/candidate/register', async (req, res) => {
             
             const fallbackQuery = `
                 INSERT INTO candidates (unique_id, full_name, email, phone, password, status, account_status, created_at)
-                VALUES ($1, $2, $3, $4, $5, 'Pending', 'Verified', NOW()) RETURNING unique_id;
+                VALUES ($1, $2, $3, $4, $5, 'Pending', 'Verified', NOW()) RETURNING *;
             `;
             const fallbackValues = [unique_id, data.fullName, cleanEmail, cleanPhone, hashedPassword];
             
             const fallbackResult = await pool.query(fallbackQuery, fallbackValues);
-            console.log(`✅ Candidate fallback registered: ${fallbackResult.rows[0].unique_id}`);
+            
+            console.log("\n✅ FALLBACK SUCCESS: CORE DATA STORED IN DATABASE!");
+            console.log("---------------------------------------------");
+            console.log(`Row ID: ${fallbackResult.rows[0].unique_id}`);
+            console.log("Only Core Fields (Name, Email, Phone, Pass) saved due to Schema issue.");
+            console.log("---------------------------------------------\n");
+
             return res.status(201).json({ success: true, message: "Candidate registered (via Fallback)", uniqueId: fallbackResult.rows[0].unique_id });
         }
 
     } catch (error) {
-        console.error("❌ Ultimate Catch Error:", error);
+        console.error("❌ Ultimate Catch Server Error:", error);
         res.status(500).json({ success: false, message: "Server error during registration." });
     }
 });
