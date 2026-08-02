@@ -61,8 +61,7 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
-        // Safe validation for Aadhaar using the explicitly redacted placeholder 
-        // to conform to systemic privacy mandates
+        // Safe validation for Aadhaar placeholder
         if (data.aadhaar && data.aadhaar.length > 0 && data.aadhaar !== "[Aadhaar Redacted]" && data.aadhaar.length !== 12) {
              return res.status(400).json({ success: false, message: "Aadhaar Number must be exactly 12 digits." });
         }
