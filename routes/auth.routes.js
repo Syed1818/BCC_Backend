@@ -11,12 +11,12 @@ router.post('/candidate/register', async (req, res) => {
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
-        // Enforce Checkbox Confirmations
+        // Enforce Checkbox Confirmations directly on the backend
         if (!data.tncAccepted || !data.declarationAccepted) {
             return res.status(400).json({ success: false, message: "You must accept the Terms & Conditions and the Candidate Declaration to proceed." });
         }
 
-        // Enforce Password Strength Server-Side
+        // Enforce Password Strength Server-Side exactly as specified
         const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^._-])[A-Za-z\d@$!%*?&#^._-]{8,}$/;
         if (!data.password || !passwordRegex.test(data.password)) {
             return res.status(400).json({
@@ -25,13 +25,21 @@ router.post('/candidate/register', async (req, res) => {
             });
         }
 
+        // Validate Email
         const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
-        const cleanPhone = data.phone ? data.phone.replace(/\D/g, "").trim() : null;
-
         if (cleanEmail) {
-            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/;
             if (!emailRegex.test(cleanEmail)) {
                 return res.status(400).json({ success: false, message: "Invalid email address format." });
+            }
+        }
+
+        // Validate Mobile Number (Must be 10 digits starting with 6-9)
+        const cleanPhone = data.phone ? data.phone.replace(/\D/g, "").trim() : null;
+        if (cleanPhone) {
+            const phoneRegex = /^[6-9]\d{9}$/;
+            if (!phoneRegex.test(cleanPhone)) {
+                return res.status(400).json({ success: false, message: "Invalid mobile number format. Must be 10 digits." });
             }
         }
 
@@ -53,6 +61,12 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
+        // Safe validation for Aadhaar using the explicitly redacted placeholder 
+        // to conform to systemic privacy mandates
+        if (data.aadhaar && data.aadhaar.length > 0 && data.aadhaar !== "[Aadhaar Redacted]" && data.aadhaar.length !== 12) {
+             return res.status(400).json({ success: false, message: "Aadhaar Number must be exactly 12 digits." });
+        }
+
         if (data.resumeFileName) {
             const ext = data.resumeFileName.split('.').pop().toLowerCase();
             if (!['pdf', 'doc', 'docx'].includes(ext)) {
@@ -60,7 +74,6 @@ router.post('/candidate/register', async (req, res) => {
             }
         }
 
-        // Gender mapping - the frontend already handles the "Others" structure correctly
         const resolvedGender = data.gender || null;
         const unique_id = 'BCC-CAN-' + Math.floor(100000 + Math.random() * 900000);
 
