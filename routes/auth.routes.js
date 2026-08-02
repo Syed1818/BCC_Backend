@@ -87,7 +87,7 @@ router.post('/candidate/register', async (req, res) => {
         const insertQuery = `
             INSERT INTO candidates (
                 unique_id, full_name, email, phone, password, dob, gender, preferred_language, category,
-                current_address, permanent_address,
+                 permanent_address,
                 highest_qualification, year_of_passing, institution, school_name, course, specialization, percentage_cgpa, languages_fluent,
                 skills, experience_type, years_of_experience, employment_status, current_job_role, current_company,
                 resume_file_name, certifications, preferred_roles, preferred_locations, willing_to_relocate, preferred_job_type, expected_salary,
