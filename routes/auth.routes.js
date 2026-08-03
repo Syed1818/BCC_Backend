@@ -129,7 +129,6 @@ router.post('/candidate/register', async (req, res) => {
 // --- EMPLOYER REGISTRATION (NEW ENTERPRISE ONBOARDING) ---
 // =====================================================================
 
-// NEW: Wrapped in Multer error handler to prevent silent 400 Bad Request crashes
 router.post('/employer/register', function (req, res, next) {
     upload.single('org_logo')(req, res, function (err) {
         if (err instanceof multer.MulterError) {
@@ -192,6 +191,7 @@ router.post('/employer/register', function (req, res, next) {
             ) RETURNING id;
         `;
 
+        // FIXED: Removed JSON.stringify() from arrays so Postgres reads them properly
         const values = [
             data.company_name || "", 
             cleanEmail, 
@@ -200,7 +200,7 @@ router.post('/employer/register', function (req, res, next) {
             data.website || "", 
             data.org_type || "", 
             data.legal_structure || "", 
-            JSON.stringify(parseArray(data.core_sectors)), 
+            parseArray(data.core_sectors), // <-- FIXED
             data.pincode || "", 
             data.state || "", 
             data.district || "", 
@@ -227,7 +227,7 @@ router.post('/employer/register', function (req, res, next) {
             data.employee_strength || "", 
             data.hiring_for || "", 
             data.hire_pwds || "", 
-            JSON.stringify(parseArray(data.accepted_disabilities)), 
+            parseArray(data.accepted_disabilities), // <-- FIXED
             logoUrl, 
             data.digital_onboarding === 'true' || data.digital_onboarding === true, 
             data.source_of_discovery || "", 
@@ -248,7 +248,6 @@ router.post('/employer/register', function (req, res, next) {
     } catch (error) { 
         console.error("❌ Employer Registration Database Error:", error);
         
-        // This will STRICTLY catch missing DB fields or array errors and push it to the bright red UI box
         if (error.code) { 
             return res.status(400).json({ success: false, message: `Database Setup Error: ${error.detail || error.message}. Please check that your Postgres columns match exactly.` }); 
         }
