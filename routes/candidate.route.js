@@ -342,33 +342,43 @@ router.get('/:id/interviews', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// --- CANDIDATE ACTIVITY HISTORY (UNIVERSAL ID MATCHING) ---
 router.get('/:id/history', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candCheck.rows.length === 0) return res.json({ success: true, data: [] });
-        const result = await pool.query("SELECT * FROM candidate_activity_logs WHERE candidate_id = $1 ORDER BY created_at DESC", [candCheck.rows[0].id]);
+        const candidateStringId = req.params.id;
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        
+        const result = await pool.query(`
+            SELECT * FROM candidate_activity_logs 
+            WHERE candidate_id::text = $1 OR candidate_id::text = $2 
+            ORDER BY created_at DESC
+        `, [candidateStringId, candidateIntId.toString()]);
+        
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
-});
-
-router.post('/history/log', async (req, res) => {
-    try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("INSERT INTO candidate_activity_logs (candidate_id, action_type, title, description) VALUES ($1, $2, $3, $4)", [candCheck.rows[0].id, req.body.actionType, req.body.title, req.body.description]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) {
+        console.error("❌ Error fetching activity history:", error.message);
+        res.status(500).json({ success: false, message: "Server error fetching history." });
+    }
 });
 
 router.delete('/:id/history', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("DELETE FROM candidate_activity_logs WHERE candidate_id = $1", [candCheck.rows[0].id]);
-        res.json({ success: true });
-    } catch (error) { res.status(500).json({ success: false }); }
+        const candidateStringId = req.params.id;
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        
+        await pool.query(`
+            DELETE FROM candidate_activity_logs 
+            WHERE candidate_id::text = $1 OR candidate_id::text = $2
+        `, [candidateStringId, candidateIntId.toString()]);
+        
+        res.json({ success: true, message: "History cleared successfully." });
+    } catch (error) {
+        console.error("❌ Error clearing history:", error.message);
+        res.status(500).json({ success: false, message: "Server error clearing history." });
+    }
 });
-
 router.post('/feedback', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
