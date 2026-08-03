@@ -627,4 +627,82 @@ router.get('/interviews/dashboard', async (req, res) => {
     }
 });
 
+// ==========================================
+// MOBILE QR CHECK-IN FLOW
+// ==========================================
+
+// 1. Request OTP
+router.post('/qr/request-otp', async (req, res) => {
+    const { email, phone, role } = req.body;
+    try {
+        if (role === 'candidate') {
+            const result = await pool.query("SELECT id FROM candidates WHERE email = $1 AND phone = $2", [email, phone]);
+            if (result.rows.length === 0) {
+                return res.status(404).json({ success: false, message: "No candidate found with these details. Please register first." });
+            }
+        }
+        // In a real app, send an SMS/Email here. For now, we mock it.
+        res.json({ success: true, message: "OTP sent successfully! (Use 1234 for testing)" });
+    } catch (error) {
+        console.error("OTP Request Error:", error);
+        res.status(500).json({ success: false, message: "Server error generating OTP." });
+    }
+});
+
+// 2. Verify OTP & Fetch Details
+router.post('/qr/verify-otp', async (req, res) => {
+    const { email, phone, otp, role } = req.body;
+    
+    // Mock OTP verification (1234)
+    if (otp !== '1234') {
+        return res.status(400).json({ success: false, message: "Invalid OTP. Please try again." });
+    }
+
+    try {
+        if (role === 'candidate') {
+            const result = await pool.query(
+                "SELECT unique_id as id, full_name as name, email, phone, highest_qualification as qual FROM candidates WHERE email = $1 AND phone = $2", 
+                [email, phone]
+            );
+            return res.json({ success: true, data: result.rows[0] });
+        } else {
+            return res.status(400).json({ success: false, message: "Employer/Exhibitor flow not fully configured yet." });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error verifying OTP." });
+    }
+});
+
+// 3. Mark Final Attendance
+router.post('/qr/mark-attendance', async (req, res) => {
+    const { eventId, userId, role } = req.body;
+    try {
+        let dbUserId;
+        if (role === 'candidate') {
+            const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [userId]);
+            if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+            dbUserId = candCheck.rows[0].id;
+        }
+
+        // Check if already marked
+        const dup = await pool.query("SELECT id FROM event_attendance WHERE event_id = $1 AND user_id = $2 AND user_type = $3", [eventId, dbUserId, role]);
+        if (dup.rows.length > 0) {
+            return res.json({ success: true, message: "Attendance is already marked for this event!" });
+        }
+
+        // Insert Attendance
+        await pool.query("INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) VALUES ($1, $2, $3, NOW())", [eventId, dbUserId, role]);
+        
+        // Update Registration Status
+        if (role === 'candidate') {
+            await pool.query("UPDATE event_candidate_registrations SET attendance_status = 'Present' WHERE event_id = $1 AND candidate_id = $2", [eventId, dbUserId]);
+        }
+
+        res.json({ success: true, message: "Attendance marked successfully!" });
+    } catch (error) {
+        console.error("Mark Attendance Error:", error);
+        res.status(500).json({ success: false, message: "Failed to mark attendance." });
+    }
+});
+
 module.exports = router;
