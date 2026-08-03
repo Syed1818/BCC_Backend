@@ -149,7 +149,7 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
 });
 
 
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (SHOWS ALL JOBS) ---
+// --- GLOBAL JOB BOARD (STRICTLY EVENT JOBS ONLY) ---
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -168,13 +168,17 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id; // DB expects an Integer
         }
 
-        // 2. Fetch ALL Active Jobs (Event and Non-Event)
+        // 2. Fetch ONLY Jobs linked to an Event
+        // INNER JOIN events completely removes normal jobs from this list.
         const jobsQuery = `
             SELECT 
                 j.*, 
+                e.name as event_name,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
+            INNER JOIN events e 
+                ON j.event_id = e.id
             LEFT JOIN job_applications a 
                 ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
             WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
@@ -184,18 +188,7 @@ router.get('/:id/jobs', async (req, res) => {
         const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
         let jobs = jobsResult.rows;
 
-        // 3. Fetch Events safely to avoid SQL crashes if column name is weird
-        let eventsMap = {};
-        try {
-            const eventsResult = await pool.query("SELECT * FROM events");
-            eventsResult.rows.forEach(e => {
-                eventsMap[e.id] = e.event_name || e.name || e.title || "Special Event";
-            });
-        } catch(err) {
-            console.error("Warning: Could not link events table perfectly, but jobs will still load.");
-        }
-
-        // 4. Fetch Saved Jobs
+        // 3. Fetch Saved Jobs
         let savedJobIds = new Set();
         if (candidateProfile) {
             try {
@@ -204,7 +197,7 @@ router.get('/:id/jobs', async (req, res) => {
             } catch(err) {}
         }
 
-        // 5. Process jobs: Parse JSON and compute match score
+        // 4. Process jobs: Parse JSON and compute match score
         const processedJobs = jobs.map(job => {
             let jobSkills = [];
             try {
@@ -261,12 +254,6 @@ router.get('/:id/jobs', async (req, res) => {
                 matchScore = Math.round((matchedWeights / totalWeights) * 100);
             }
 
-            // Bind Event Name if it exists
-            let finalEventName = null;
-            if (job.event_id && job.event_id != '0') {
-                finalEventName = eventsMap[job.event_id] || null;
-            }
-
             return {
                 id: job.id,
                 company: job.company_name || job.company,
@@ -277,7 +264,7 @@ router.get('/:id/jobs', async (req, res) => {
                 experience: job.experience_required || job.experience,
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
-                event_name: finalEventName,
+                event_name: job.event_name,
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
                 matchScore: matchScore > 0 ? matchScore : 15,
@@ -299,11 +286,10 @@ router.get('/:id/applications', async (req, res) => {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        // FIXED: Using LEFT JOIN on events so non-event applications still show up!
         const result = await pool.query(`
             SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
                    CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
-                   COALESCE(e.event_name, e.name) as event_name
+                   e.name as event_name
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id
