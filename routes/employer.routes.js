@@ -714,4 +714,56 @@ router.put('/queue/:queueId/status', async (req, res) => {
     }
 });
 
+// POST /api/employer/feedback - Submit new feedback & video testimonial
+router.post('/feedback', async (req, res) => {
+  try {
+    const {
+      employerId,
+      rating,
+      candidateQuality,
+      eventOrganization,
+      hiringEfficiency,
+      videoUrl
+    } = req.body;
+
+    if (!employerId || !rating) {
+      return res.status(400).json({
+        success: false,
+        message: 'Employer ID and rating are required.'
+      });
+    }
+
+    // Matches your exact columns: overall_rating, candidate_quality, etc.
+    const query = `
+      INSERT INTO employer_feedback 
+      (employer_id, overall_rating, candidate_quality, event_organization, hiring_efficiency, video_url, status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      RETURNING *;
+    `;
+
+    const values = [
+      employerId,
+      rating,
+      candidateQuality || null,
+      eventOrganization || null,
+      hiringEfficiency || null,
+      videoUrl || null
+    ];
+
+    const result = await db.query(query, values);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Feedback submitted successfully',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error saving feedback:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error while saving feedback'
+    });
+  }
+});
+
 module.exports = router;
