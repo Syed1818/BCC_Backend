@@ -279,16 +279,14 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS & EVENTS (UNIVERSAL ID MATCHING) ---
+// --- APPLICATIONS & EVENTS (CRASH-PROOF COLUMN RESOLUTION) ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
 
-        // 1. Get the candidate's integer ID from the candidates table just in case
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        // 2. Fetch applications matching either the string unique_id or integer id safely
         const result = await pool.query(`
             SELECT 
                 ja.id as application_id, 
@@ -299,7 +297,7 @@ router.get('/:id/applications', async (req, res) => {
                 j.employer_id, 
                 j.id as job_id, 
                 CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
-                COALESCE(e.name, e.event_name) as event_name,
+                COALESCE(e.event_name, e.name) as event_name,
                 e.event_date,
                 e.venue_address,
                 e.city,
@@ -318,7 +316,6 @@ router.get('/:id/applications', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching applications." }); 
     }
 });
-
 router.get('/:id/events', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
