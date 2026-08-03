@@ -37,7 +37,6 @@ const upload = multer({
     }
 });
 
-// Helper to safely parse arrays from frontend FormData
 const parseArray = (input) => {
     if (!input) return [];
     if (Array.isArray(input)) return input;
@@ -58,11 +57,9 @@ router.get('/:employerId/dashboard', async (req, res) => {
             }
         }
 
-        // Fetch Live Profile for Header
         const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
         const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
 
-        // 1. Count active jobs BUT filter out any that belong to 'completed' or 'closed' events
         const activeJobs = await pool.query(`
             SELECT COUNT(j.*) FROM jobs j
             LEFT JOIN events e ON j.event_id::text = e.id::text
@@ -71,14 +68,12 @@ router.get('/:employerId/dashboard', async (req, res) => {
             AND (e.id IS NULL OR TRIM(LOWER(e.status)) NOT IN ('completed', 'closed', 'expired'))
         `, [dbEmpId]);
         
-        // 2. Count ALL applications
         const totalApps = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             WHERE ja.employer_id = $1
         `, [dbEmpId]);
         
-        // 3. Count Interviews
         const interviews = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
@@ -86,7 +81,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             AND TRIM(LOWER(ja.status)) IN ('interview', 'interviewed', 'interview scheduled')
         `, [dbEmpId]);
         
-        // 4. Count Offers
         const offers = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
@@ -94,7 +88,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             AND TRIM(LOWER(ja.status)) IN ('offered', 'hired')
         `, [dbEmpId]);
 
-        // 5. Funnel Data
         const funnelRes = await pool.query(`
             SELECT ja.status, COUNT(ja.*) as count 
             FROM job_applications ja 
@@ -113,7 +106,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             if (stat === 'hired') funnel.Hired += parseInt(row.count);
         });
 
-        // 6. Recent Applicants
         const recentApps = await pool.query(`
             SELECT ja.id as application_id, ja.status, ja.applied_at, 
                    COALESCE(c.full_name, 'Candidate') as candidate_name, 
@@ -126,7 +118,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             ORDER BY ja.applied_at DESC LIMIT 5
         `, [dbEmpId]);
 
-        // 7. Last 7 Days Application Trend for Chart
         const trendRes = await pool.query(`
             WITH dates AS (
                 SELECT current_date - i AS day_date
@@ -157,32 +148,20 @@ router.get('/:employerId/dashboard', async (req, res) => {
     }
 });
 
-// =====================================================================
 // --- COMPREHENSIVE PROFILE FETCH & UPDATE ---
-// =====================================================================
-
 router.get('/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query(
-                "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", 
-                [employerId]
-            );
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, message: "Employer profile not found." });
-            }
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer profile not found." });
         }
 
-        // Fetching the complete row to support pre-filling all Excel fields
         const result = await pool.query("SELECT * FROM employers WHERE id = $1", [dbEmpId]);
         
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Employer profile not found." });
-        }
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Employer profile not found." });
         res.json({ success: true, data: result.rows[0] });
     } catch (error) {
         console.error("❌ Profile Fetch Error:", error);
@@ -208,7 +187,6 @@ router.put('/profile/:employerId/photo', async (req, res) => {
     }
 });
 
-// NEW: Comprehensive Profile Update (Handles Text + Files)
 router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc', maxCount: 1 }, { name: 'brochure', maxCount: 1 }]), async (req, res) => {
     const { employerId } = req.params;
     const data = req.body;
@@ -221,65 +199,31 @@ router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // Handle uploaded file URLs
         const complianceDocUrl = req.files && req.files['compliance_doc'] ? `/uploads/employer_docs/${req.files['compliance_doc'][0].filename}` : null;
         const brochureUrl = req.files && req.files['brochure'] ? `/uploads/employer_docs/${req.files['brochure'][0].filename}` : null;
 
-        // Dynamic Update Builder to only update provided fields without erasing existing ones
         const updateFields = [];
         const values = [];
         let queryIndex = 1;
 
-        // Map expected incoming fields to DB columns
         const fieldsToUpdate = {
-            company_name: data.company_name,
-            org_type: data.org_type,
-            legal_structure: data.legal_structure,
-            core_sectors: parseArray(data.core_sectors),
-            website: data.website,
-            about_company: data.about_company,
-            country: data.country || 'India',
-            pincode: data.pincode,
-            state: data.state,
-            district: data.district,
-            taluk: data.taluk,
-            mla_constituency: data.mla_constituency,
-            mp_constituency: data.mp_constituency,
-            resident_type: data.resident_type,
-            local_body_details: data.local_body_details,
-            locality_area: data.locality_area,
-            current_address: data.current_address,
-            map_link: data.map_link,
-            org_presence: data.org_presence,
-            multiple_branches: data.multiple_branches,
-            poc1_title: data.poc1_title,
-            poc1_name: data.poc1_name,
-            poc1_designation: data.poc1_designation,
-            poc1_email: data.poc1_email,
-            poc1_phone: data.poc1_phone,
-            poc2_title: data.poc2_title,
-            poc2_name: data.poc2_name,
-            poc2_designation: data.poc2_designation,
-            poc2_email: data.poc2_email,
-            poc2_phone: data.poc2_phone,
-            employee_strength: data.employee_strength,
-            hiring_for: data.hiring_for,
-            hire_pwds: data.hire_pwds,
-            accepted_disabilities: parseArray(data.accepted_disabilities),
-            sector_preference: data.sector_preference,
-            preferred_opportunity_types: parseArray(data.preferred_opportunity_types),
-            preferred_job_type: data.preferred_job_type,
-            engagement_preference: data.engagement_preference,
-            joining_preference: data.joining_preference,
-            preferred_job_location: data.preferred_job_location,
-            social_facebook: data.social_facebook,
-            social_instagram: data.social_instagram,
-            social_linkedin: data.social_linkedin,
-            social_youtube: data.social_youtube,
-            social_x: data.social_x,
-            social_whatsapp: data.social_whatsapp,
-            social_github: data.social_github,
-            notification_preferences: parseArray(data.notification_preferences)
+            company_name: data.company_name, org_type: data.org_type, legal_structure: data.legal_structure,
+            core_sectors: parseArray(data.core_sectors), website: data.website, about_company: data.about_company,
+            country: data.country || 'India', pincode: data.pincode, state: data.state, district: data.district,
+            taluk: data.taluk, mla_constituency: data.mla_constituency, mp_constituency: data.mp_constituency,
+            resident_type: data.resident_type, local_body_details: data.local_body_details, locality_area: data.locality_area,
+            current_address: data.current_address, map_link: data.map_link, org_presence: data.org_presence,
+            multiple_branches: data.multiple_branches, poc1_title: data.poc1_title, poc1_name: data.poc1_name,
+            poc1_designation: data.poc1_designation, poc1_email: data.poc1_email, poc1_phone: data.poc1_phone,
+            poc2_title: data.poc2_title, poc2_name: data.poc2_name, poc2_designation: data.poc2_designation,
+            poc2_email: data.poc2_email, poc2_phone: data.poc2_phone, employee_strength: data.employee_strength,
+            hiring_for: data.hiring_for, hire_pwds: data.hire_pwds, accepted_disabilities: parseArray(data.accepted_disabilities),
+            sector_preference: data.sector_preference, preferred_opportunity_types: parseArray(data.preferred_opportunity_types),
+            preferred_job_type: data.preferred_job_type, engagement_preference: data.engagement_preference,
+            joining_preference: data.joining_preference, preferred_job_location: data.preferred_job_location,
+            social_facebook: data.social_facebook, social_instagram: data.social_instagram, social_linkedin: data.social_linkedin,
+            social_youtube: data.social_youtube, social_x: data.social_x, social_whatsapp: data.social_whatsapp,
+            social_github: data.social_github, notification_preferences: parseArray(data.notification_preferences)
         };
 
         for (const [key, value] of Object.entries(fieldsToUpdate)) {
@@ -290,19 +234,9 @@ router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc
             }
         }
 
-        // Add File Updates if present
-        if (complianceDocUrl) {
-            updateFields.push(`compliance_doc_url = $${queryIndex}`);
-            values.push(complianceDocUrl);
-            queryIndex++;
-        }
-        if (brochureUrl) {
-            updateFields.push(`brochure_url = $${queryIndex}`);
-            values.push(brochureUrl);
-            queryIndex++;
-        }
+        if (complianceDocUrl) { updateFields.push(`compliance_doc_url = $${queryIndex}`); values.push(complianceDocUrl); queryIndex++; }
+        if (brochureUrl) { updateFields.push(`brochure_url = $${queryIndex}`); values.push(brochureUrl); queryIndex++; }
 
-        // Execute only if there is something to update
         if (updateFields.length > 0) {
             values.push(dbEmpId);
             const updateQuery = `UPDATE employers SET ${updateFields.join(', ')} WHERE id = $${queryIndex} RETURNING id`;
@@ -316,7 +250,6 @@ router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc
     }
 });
 
-
 // --- PROFILE & STALLS ---
 router.get('/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
@@ -324,17 +257,11 @@ router.get('/:employerId/event-stalls', async (req, res) => {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                 return res.status(404).json({ success: false, message: "Employer event stalls not found." });
-            }
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer event stalls not found." });
         }
 
-        const result = await pool.query(
-            "SELECT id, event_id as \"eventId\", status, payment_status as \"paymentStatus\", applied_at as \"appliedAt\" FROM employer_event_stalls WHERE employer_id = $1",
-            [dbEmpId]
-        );
+        const result = await pool.query("SELECT id, event_id as \"eventId\", status, payment_status as \"paymentStatus\", applied_at as \"appliedAt\" FROM employer_event_stalls WHERE employer_id = $1", [dbEmpId]);
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching employer event stalls:", error);
@@ -344,37 +271,21 @@ router.get('/:employerId/event-stalls', async (req, res) => {
 
 router.post('/event-stalls/apply', async (req, res) => {
     const { employerId, eventId } = req.body;
-    
-    if (!employerId || !eventId) {
-        return res.status(400).json({ success: false, message: "Missing employerId or eventId" });
-    }
+    if (!employerId || !eventId) return res.status(400).json({ success: false, message: "Missing employerId or eventId" });
 
     try {
         let dbEmpId = employerId;
         if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
-            const lookup = await pool.query(
-                "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", 
-                [employerId]
-            );
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, message: "Employer account not found." });
-            }
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer account not found." });
         }
 
-        const duplicate = await pool.query(
-            "SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2",
-            [dbEmpId, eventId]
-        );
-
-        if (duplicate.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
-        }
+        const duplicate = await pool.query("SELECT id FROM employer_event_stalls WHERE employer_id = $1 AND event_id = $2", [dbEmpId, eventId]);
+        if (duplicate.rows.length > 0) return res.status(400).json({ success: false, message: "You have already applied for a stall at this event." });
 
         await pool.query(
-            `INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) 
-             VALUES ($1, $2, 'pending', 'pending', NOW())`,
+            `INSERT INTO employer_event_stalls (employer_id, event_id, status, payment_status, applied_at) VALUES ($1, $2, 'pending', 'pending', NOW())`,
             [dbEmpId, eventId]
         );
 
@@ -392,11 +303,8 @@ router.get('/:employerId/jobs-list', async (req, res) => {
         let dbEmpId = employerId;
         if (employerId.includes('@') || isNaN(employerId)) {
             const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, message: "Employer jobs not found." });
-            }
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer jobs not found." });
         }
 
         const result = await pool.query("SELECT * FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [dbEmpId]);
@@ -435,10 +343,8 @@ router.post('/:employerId/jobs', async (req, res) => {
         `;
         
         const values = [
-            dbEmpId, companyName, title, jobType || 'Full-time', location, 
-            qualification, experience, salary, 
-            JSON.stringify(skills || []), vacancies || 1, description || '', 
-            event_id || null, initialStatus
+            dbEmpId, companyName, title, jobType || 'Full-time', location, qualification, experience, salary, 
+            JSON.stringify(skills || []), vacancies || 1, description || '', event_id || null, initialStatus
         ];
 
         const result = await pool.query(insertQuery, values);
@@ -456,17 +362,14 @@ router.put('/jobs/:jobId', async (req, res) => {
     try {
         const updateQuery = `
             UPDATE jobs SET 
-                title = $1, job_type = $2, location = $3, 
-                qualification_required = $4, experience_required = $5, 
-                salary_range = $6, skills_required = $7, 
-                vacancies = $8, description = $9, event_id = $10, status = 'pending'
+                title = $1, job_type = $2, location = $3, qualification_required = $4, experience_required = $5, 
+                salary_range = $6, skills_required = $7, vacancies = $8, description = $9, event_id = $10, status = 'pending'
             WHERE id = $11 RETURNING *;
         `;
         
         const values = [
             title, jobType, location, qualification, experience, salary, 
-            JSON.stringify(skills || []), vacancies || 1, description || '', 
-            event_id || null, jobId
+            JSON.stringify(skills || []), vacancies || 1, description || '', event_id || null, jobId
         ];
 
         const result = await pool.query(updateQuery, values);
@@ -490,15 +393,8 @@ router.put('/jobs/:jobId/close', async (req, res) => {
     const { jobId } = req.params;
     const { employerId } = req.body;
     try {
-        const result = await pool.query(
-            "UPDATE jobs SET status = 'closed' WHERE id = $1 AND employer_id = $2 RETURNING id, title, status",
-            [jobId, employerId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Job not found or unauthorized." });
-        }
-
+        const result = await pool.query("UPDATE jobs SET status = 'closed' WHERE id = $1 AND employer_id = $2 RETURNING id, title, status", [jobId, employerId]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Job not found or unauthorized." });
         res.json({ success: true, message: `Job "${result.rows[0].title}" has been closed.`, data: result.rows[0] });
     } catch (error) {
         console.error("❌ Close Job Error:", error);
@@ -510,44 +406,12 @@ router.put('/jobs/:jobId/reactivate', async (req, res) => {
     const { jobId } = req.params;
     const { employerId } = req.body;
     try {
-        const result = await pool.query(
-            "UPDATE jobs SET status = 'approved', created_at = CURRENT_TIMESTAMP WHERE id = $1 AND employer_id = $2 RETURNING id, title",
-            [jobId, employerId]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Job not found or unauthorized." });
-        }
-
+        const result = await pool.query("UPDATE jobs SET status = 'approved', created_at = CURRENT_TIMESTAMP WHERE id = $1 AND employer_id = $2 RETURNING id, title", [jobId, employerId]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Job not found or unauthorized." });
         res.json({ success: true, message: `Job "${result.rows[0].title}" reactivated successfully.` });
     } catch (error) {
         console.error("❌ Job Reactivation Error:", error);
         res.status(500).json({ success: false, message: "Server error reactivating job." });
-    }
-});
-
-router.get('/:employerId/candidates-reviewed-count', async (req, res) => {
-    const { employerId } = req.params;
-    try {
-        let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, count: 0 });
-            }
-        }
-
-        const countRes = await pool.query(
-            "SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", 
-            [dbEmpId]
-        );
-        const count = parseInt(countRes.rows[0].count) || 0;
-        res.json({ success: true, count });
-    } catch (error) {
-        console.error("❌ Count Fetch Error:", error);
-        res.status(500).json({ success: false, count: 0 });
     }
 });
 
@@ -562,10 +426,7 @@ router.get('/:employerId/hrs', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        const result = await pool.query(
-            "SELECT id, full_name as \"fullName\", email, created_at as \"createdAt\" FROM employer_hrs WHERE employer_id = $1 ORDER BY created_at DESC",
-            [dbEmpId]
-        );
+        const result = await pool.query("SELECT id, full_name as \"fullName\", email, created_at as \"createdAt\" FROM employer_hrs WHERE employer_id = $1 ORDER BY created_at DESC", [dbEmpId]);
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching HR members:", error);
@@ -576,10 +437,7 @@ router.get('/:employerId/hrs', async (req, res) => {
 router.post('/:employerId/hrs', async (req, res) => {
     const { employerId } = req.params;
     const { fullName, email, password } = req.body;
-
-    if (!fullName || !email || !password) {
-        return res.status(400).json({ success: false, message: "Full Name, Email, and Password are required." });
-    }
+    if (!fullName || !email || !password) return res.status(400).json({ success: false, message: "Full Name, Email, and Password are required." });
 
     try {
         let dbEmpId = employerId;
@@ -590,24 +448,16 @@ router.post('/:employerId/hrs', async (req, res) => {
         }
 
         const countCheck = await pool.query("SELECT COUNT(*) FROM employer_hrs WHERE employer_id = $1", [dbEmpId]);
-        if (parseInt(countCheck.rows[0].count) >= 3) {
-            return res.status(400).json({ success: false, message: "Maximum limit of 3 HR members reached." });
-        }
+        if (parseInt(countCheck.rows[0].count) >= 3) return res.status(400).json({ success: false, message: "Maximum limit of 3 HR members reached." });
 
         const cleanEmail = email.trim().toLowerCase();
         const emailCheck = await pool.query("SELECT id FROM employer_hrs WHERE LOWER(email) = $1", [cleanEmail]);
-        if (emailCheck.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "An HR member with this email already exists." });
-        }
+        if (emailCheck.rows.length > 0) return res.status(400).json({ success: false, message: "An HR member with this email already exists." });
 
         const salt = await bcrypt.genSalt(10);
         const passwordHash = await bcrypt.hash(password, salt);
 
-        await pool.query(
-            "INSERT INTO employer_hrs (employer_id, full_name, email, password_hash) VALUES ($1, $2, $3, $4)",
-            [dbEmpId, fullName.trim(), cleanEmail, passwordHash]
-        );
-
+        await pool.query("INSERT INTO employer_hrs (employer_id, full_name, email, password_hash) VALUES ($1, $2, $3, $4)", [dbEmpId, fullName.trim(), cleanEmail, passwordHash]);
         res.status(201).json({ success: true, message: "HR member added successfully." });
     } catch (error) {
         console.error("❌ Error adding HR member:", error);
@@ -619,9 +469,7 @@ router.delete('/hrs/:hrId', async (req, res) => {
     const { hrId } = req.params;
     try {
         const result = await pool.query("DELETE FROM employer_hrs WHERE id = $1 RETURNING id", [hrId]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "HR member not found." });
-        }
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "HR member not found." });
         res.json({ success: true, message: "HR member removed successfully." });
     } catch (error) {
         console.error("❌ Error removing HR member:", error);
@@ -629,7 +477,10 @@ router.delete('/hrs/:hrId', async (req, res) => {
     }
 });
 
-// --- LIVE QUEUE & APPLICATIONS ---
+// =====================================================================
+// --- LIVE QUEUE & APPLICATIONS (NEW EVENT TOKEN PIPELINE) ---
+// =====================================================================
+
 router.get('/:employerId/job-options', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -640,10 +491,7 @@ router.get('/:employerId/job-options', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        const result = await pool.query(
-            "SELECT id, title, location FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC",
-            [dbEmpId]
-        );
+        const result = await pool.query("SELECT id, title, location FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [dbEmpId]);
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching job options:", error);
@@ -655,22 +503,11 @@ router.get('/jobs/:jobId/applications', async (req, res) => {
     const { jobId } = req.params;
     try {
         const result = await pool.query(`
-            SELECT 
-                ja.id as application_id,
-                ja.status as app_status,
-                ja.applied_at,
-                c.unique_id,
-                c.full_name,
-                c.email,
-                c.phone,
-                c.highest_qualification,
-                c.experience_type,
-                c.skills,
-                c.resume_file_name,
-                85 as "matchScore"
+            SELECT ja.id as application_id, ja.status as app_status, ja.applied_at,
+                   c.unique_id, c.full_name, c.email, c.phone, c.highest_qualification, c.experience_type,
+                   c.skills, c.resume_file_name, 85 as "matchScore"
             FROM job_applications ja
-            JOIN candidates c ON ja.candidate_id::text = c.id::text 
-                OR ja.candidate_id::text = c.unique_id
+            JOIN candidates c ON ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id
             WHERE ja.job_id::text = $1::text
             ORDER BY ja.applied_at DESC
         `, [jobId]);
@@ -682,6 +519,57 @@ router.get('/jobs/:jobId/applications', async (req, res) => {
     }
 });
 
+// NEW: STATUS UPDATER & TOKEN GENERATOR
+router.put('/applications/:appId/status', async (req, res) => {
+    const { appId } = req.params;
+    const { status } = req.body;
+
+    try {
+        // 1. Update the application status
+        const updateRes = await pool.query(
+            "UPDATE job_applications SET status = $1 WHERE id = $2 RETURNING candidate_id, job_id, status",
+            [status, appId]
+        );
+        
+        if (updateRes.rows.length === 0) return res.status(404).json({ success: false, message: "Application not found." });
+        const app = updateRes.rows[0];
+
+        // 2. If status is 'Interview', Auto-Generate a Queue Token
+        if (status === 'Interview') {
+            const jobRes = await pool.query("SELECT event_id FROM jobs WHERE id = $1", [app.job_id]);
+            const eventId = jobRes.rows[0]?.event_id;
+            
+            if (eventId) {
+                // Ensure we get the correct internal candidate ID to prevent foreign key errors
+                const candRes = await pool.query("SELECT id FROM candidates WHERE id::text = $1 OR unique_id = $1", [app.candidate_id]);
+                const realCandidateId = candRes.rows.length > 0 ? candRes.rows[0].id : null;
+
+                if (realCandidateId) {
+                    // Prevent duplicate tokens for the same job and candidate
+                    const existing = await pool.query("SELECT id FROM event_queues WHERE candidate_id = $1 AND job_id = $2", [realCandidateId, app.job_id]);
+                    
+                    if (existing.rows.length === 0) {
+                        // Generate next token number
+                        const tokenRes = await pool.query("SELECT COALESCE(MAX(token_number), 0) + 1 as next_token FROM event_queues WHERE event_id = $1 AND job_id = $2", [eventId, app.job_id]);
+                        const nextToken = tokenRes.rows[0].next_token;
+                        
+                        // Insert into live queue
+                        await pool.query(
+                            "INSERT INTO event_queues (event_id, job_id, candidate_id, token_number, status) VALUES ($1, $2, $3, $4, 'waiting')",
+                            [eventId, app.job_id, realCandidateId, nextToken]
+                        );
+                    }
+                }
+            }
+        }
+        res.json({ success: true, message: `Status updated to ${status}` });
+    } catch (error) {
+        console.error("❌ Status Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating status." });
+    }
+});
+
+// UPGRADED: LIVE QUEUE FETCH WITH APPLICATION DATA
 router.get('/:employerId/events/:eventId/queue', async (req, res) => {
     const { eventId } = req.params;
     const { jobId } = req.query;
@@ -690,10 +578,12 @@ router.get('/:employerId/events/:eventId/queue', async (req, res) => {
         let query = `
             SELECT q.id, q.token_number as "tokenNumber", q.status, q.called_at as "calledAt", 
                    q.timer_expires_at as "timerExpiresAt", c.full_name as "candidateName", 
-                   c.phone, c.highest_qualification as qualification, j.title as "jobTitle"
+                   c.phone, c.highest_qualification as qualification, j.title as "jobTitle",
+                   ja.id as "applicationId", ja.status as "appStatus"
             FROM event_queues q
             JOIN candidates c ON q.candidate_id = c.id
             JOIN jobs j ON q.job_id = j.id
+            LEFT JOIN job_applications ja ON (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id) AND ja.job_id = j.id
             WHERE q.event_id = $1
         `;
         let params = [eventId];
@@ -715,49 +605,21 @@ router.get('/:employerId/events/:eventId/queue', async (req, res) => {
 
 router.post('/queue/call-next', async (req, res) => {
     const { eventId, jobId } = req.body;
-
-    if (!eventId || !jobId) {
-        return res.status(400).json({ success: false, message: "Missing eventId or jobId." });
-    }
+    if (!eventId || !jobId) return res.status(400).json({ success: false, message: "Missing eventId or jobId." });
 
     try {
-        const activeCalled = await pool.query(
-            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'",
-            [eventId, jobId]
-        );
+        const activeCalled = await pool.query("SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'called'", [eventId, jobId]);
+        if (activeCalled.rows.length > 0) return res.status(400).json({ success: false, message: `Token #${activeCalled.rows[0].token_number} is already active. Complete or mark them as No-Show first.` });
 
-        if (activeCalled.rows.length > 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `Token #${activeCalled.rows[0].token_number} is already active. Complete or mark them as No-Show first.` 
-            });
-        }
-
-        const nextInLine = await pool.query(
-            "SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1",
-            [eventId, jobId]
-        );
-
-        if (nextInLine.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "No candidates currently waiting in queue." });
-        }
+        const nextInLine = await pool.query("SELECT id, token_number FROM event_queues WHERE event_id = $1 AND job_id = $2 AND status = 'waiting' ORDER BY token_number ASC LIMIT 1", [eventId, jobId]);
+        if (nextInLine.rows.length === 0) return res.status(404).json({ success: false, message: "No candidates currently waiting in queue." });
 
         const targetId = nextInLine.rows[0].id;
         const targetToken = nextInLine.rows[0].token_number;
 
-        const updated = await pool.query(
-            `UPDATE event_queues 
-             SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' 
-             WHERE id = $1 
-             RETURNING id, token_number, status, timer_expires_at as "timerExpiresAt"`,
-            [targetId]
-        );
+        const updated = await pool.query(`UPDATE event_queues SET status = 'called', called_at = NOW(), timer_expires_at = NOW() + INTERVAL '5 minutes' WHERE id = $1 RETURNING id, token_number, status, timer_expires_at as "timerExpiresAt"`, [targetId]);
 
-        res.json({ 
-            success: true, 
-            message: `Called Token #${targetToken}! 5-minute timer started.`, 
-            data: updated.rows[0] 
-        });
+        res.json({ success: true, message: `Called Token #${targetToken}! 5-minute timer started.`, data: updated.rows[0] });
     } catch (error) {
         console.error("❌ Error calling next candidate:", error);
         res.status(500).json({ success: false, message: "Server error calling next candidate." });
@@ -767,26 +629,13 @@ router.post('/queue/call-next', async (req, res) => {
 router.put('/queue/:queueId/status', async (req, res) => {
     const { queueId } = req.params;
     const { status } = req.body;
-
-    if (!['completed', 'missed', 'waiting', 'called'].includes(status)) {
-        return res.status(400).json({ success: false, message: "Invalid status value." });
-    }
+    if (!['completed', 'missed', 'waiting', 'called'].includes(status)) return res.status(400).json({ success: false, message: "Invalid status value." });
 
     try {
-        const result = await pool.query(
-            "UPDATE event_queues SET status = $1 WHERE id = $2 RETURNING id, token_number, status",
-            [status, queueId]
-        );
+        const result = await pool.query("UPDATE event_queues SET status = $1 WHERE id = $2 RETURNING id, token_number, status", [status, queueId]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Queue entry not found." });
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "Queue entry not found." });
-        }
-
-        res.json({ 
-            success: true, 
-            message: `Queue status updated to ${status}.`, 
-            data: result.rows[0] 
-        });
+        res.json({ success: true, message: `Queue status updated to ${status}.`, data: result.rows[0] });
     } catch (error) {
         console.error("❌ Error updating queue status:", error);
         res.status(500).json({ success: false, message: "Server error updating queue status." });
