@@ -309,7 +309,7 @@ router.get('/stall-applications', async (req, res) => {
 router.get('/jobs', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT id, title, company_name, job_type, location, status, created_at 
+            SELECT id, title, company_name, job_type, location, status, created_at, event_id 
             FROM jobs 
             ORDER BY created_at DESC
         `);
