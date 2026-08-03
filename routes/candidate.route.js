@@ -342,20 +342,70 @@ router.get('/:id/interviews', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// --- CANDIDATE ACTIVITY HISTORY (UNIVERSAL ID MATCHING) ---
+// --- CANDIDATE ACTIVITY HISTORY (DYNAMIC GENERATOR) ---
 router.get('/:id/history', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
-        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        const result = await pool.query(`
-            SELECT * FROM candidate_activity_logs 
-            WHERE candidate_id::text = $1 OR candidate_id::text = $2 
-            ORDER BY created_at DESC
-        `, [candidateStringId, candidateIntId.toString()]);
+        if (candCheck.rows.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
         
-        res.json({ success: true, data: result.rows });
+        const candidateDbId = candCheck.rows[0].id;
+
+        // Collect logs from actual platform actions (Applications, Event Registrations, etc.)
+        const logs = [];
+
+        // 1. Fetch Job Applications as History Logs
+        const apps = await pool.query(`
+            SELECT ja.id, j.title, j.company_name, ja.applied_at as created_at 
+            FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2
+        `, [candidateStringId, candidateDbId.toStringschemaName || candidateDbId.toString()]);
+
+        apps.rows.forEach(app => {
+            logs.push({
+                id: 1000 + app.id,
+                action_type: 'Application',
+                title: `Applied for ${app.title}`,
+                description: `Submitted application to ${app.company_name}`,
+                created_at: app.created_at
+            });
+        });
+
+        // 2. Fetch Event Registrations as History Logs
+        const events = await pool.query(`
+            SELECT r.id, e.name as event_name, r.registered_at as created_at
+            FROM event_candidate_registrations r
+            JOIN events e ON r.event_id = e.id
+            WHERE r.candidate_id::text = $1 OR r.candidate_id::text = $2
+        `, [candidateStringId, candidateDbId.toString()]);
+
+        events.rows.forEach(ev => {
+            logs.push({
+                id: 5000 + ev.id,
+                action_type: 'Event',
+                title: `Registered for ${ev.event_name}`,
+                description: `Secured entry pass for the job fair event`,
+                created_at: ev.created_at
+            });
+        });
+
+        // 3. Fetch any explicit logs from candidate_activity_logs if they exist
+        const explicitLogs = await pool.query(`
+            SELECT id, action_type, title, description, created_at 
+            FROM candidate_activity_logs 
+            WHERE candidate_id::text = $1 OR candidate_id::text = $2
+        `, [candidateStringId, candidateDbId.toString()]);
+
+        explicitLogs.rows.forEach(log => logs.push(log));
+
+        // Sort by most recent date first
+        logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        res.json({ success: true, data: logs });
     } catch (error) {
         console.error("❌ Error fetching activity history:", error.message);
         res.status(500).json({ success: false, message: "Server error fetching history." });
