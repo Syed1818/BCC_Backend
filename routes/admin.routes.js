@@ -295,6 +295,7 @@ router.get('/stall-applications', async (req, res) => {
             JOIN employers e ON es.employer_id = e.id 
             JOIN events ev ON es.event_id = ev.id
             LEFT JOIN venue_stalls s ON s.employer_id = e.id AND s.event_id = ev.id 
+            WHERE LOWER(ev.status) != 'completed' 
             ORDER BY es.applied_at DESC
         `);
         res.json({ success: true, data: result.rows });
