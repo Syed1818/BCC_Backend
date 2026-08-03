@@ -283,7 +283,7 @@ router.get('/:id/applications', async (req, res) => {
             SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
                    CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
                    e.name as event_name
-            FROM job_applications ja 
+            FROM applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
             WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
