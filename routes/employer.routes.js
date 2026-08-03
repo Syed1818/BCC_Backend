@@ -148,6 +148,74 @@ router.get('/:employerId/dashboard', async (req, res) => {
     }
 });
 
+// NEW: COMPREHENSIVE ANALYTICS & EXCEL REPORT ROUTE
+router.get('/:employerId/analytics', async (req, res) => {
+    const { employerId } = req.params;
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        // 1. Fetch Complete Pipeline History with specific candidate data for Excel
+        const historyRes = await pool.query(`
+            SELECT 
+                ja.applied_at as date,
+                c.unique_id as candidate_unique_id,
+                c.full_name as candidate_name,
+                c.email as candidate_email,
+                c.phone as candidate_phone,
+                j.title as job_title,
+                ja.status as action_type,
+                j.event_id,
+                e.name as event_name
+            FROM job_applications ja
+            JOIN candidates c ON (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id)
+            JOIN jobs j ON ja.job_id = j.id
+            LEFT JOIN events e ON j.event_id::text = e.id::text
+            WHERE ja.employer_id = $1
+            ORDER BY ja.applied_at DESC
+        `, [dbEmpId]);
+
+        // 2. Fetch Monthly Chart Data (Apps vs Hires)
+        const monthlyRes = await pool.query(`
+            SELECT 
+                to_char(DATE_TRUNC('month', applied_at), 'Mon') as month,
+                COUNT(*) as apps,
+                SUM(CASE WHEN TRIM(LOWER(status)) IN ('hired', 'offered', 'offer') THEN 1 ELSE 0 END) as hires
+            FROM job_applications 
+            WHERE employer_id = $1
+            GROUP BY DATE_TRUNC('month', applied_at)
+            ORDER BY DATE_TRUNC('month', applied_at) ASC
+            LIMIT 6
+        `, [dbEmpId]);
+
+        // 3. Calculate All-Time KPIs
+        const poolSize = historyRes.rows.length;
+        const hiredCount = historyRes.rows.filter(r => ['hired', 'offered', 'offer'].includes((r.action_type || '').toLowerCase().trim())).length;
+        const convRate = poolSize > 0 ? Math.round((hiredCount / poolSize) * 100) : 0;
+
+        res.json({
+            success: true,
+            data: {
+                kpis: {
+                    conversionRate: convRate,
+                    avgTime: "7 Days", // Base standard, dynamically overwritten on frontend for events
+                    totalHires: hiredCount,
+                    talentPool: poolSize
+                },
+                monthlyData: monthlyRes.rows.length > 0 ? monthlyRes.rows : [{ month: 'Current', apps: 0, hires: 0 }],
+                history: historyRes.rows
+            }
+        });
+    } catch (error) {
+        console.error("❌ Analytics Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching analytics." });
+    }
+});
+
 // --- COMPREHENSIVE PROFILE FETCH & UPDATE ---
 router.get('/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
@@ -481,7 +549,6 @@ router.delete('/hrs/:hrId', async (req, res) => {
 // --- LIVE QUEUE & APPLICATIONS (NEW EVENT TOKEN PIPELINE) ---
 // =====================================================================
 
-// UPDATED: Filters out completed/closed events
 router.get('/:employerId/job-options', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -492,7 +559,6 @@ router.get('/:employerId/job-options', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // Only select active jobs tied to active/open events
         const result = await pool.query(`
             SELECT j.id, j.title, j.location, j.company_name, j.event_id 
             FROM jobs j
@@ -533,13 +599,11 @@ router.get('/jobs/:jobId/applications', async (req, res) => {
     }
 });
 
-// NEW: STATUS UPDATER & TOKEN GENERATOR
 router.put('/applications/:appId/status', async (req, res) => {
     const { appId } = req.params;
     const { status } = req.body;
 
     try {
-        // 1. Update the application status
         const updateRes = await pool.query(
             "UPDATE job_applications SET status = $1 WHERE id = $2 RETURNING candidate_id, job_id, status",
             [status, appId]
@@ -548,26 +612,21 @@ router.put('/applications/:appId/status', async (req, res) => {
         if (updateRes.rows.length === 0) return res.status(404).json({ success: false, message: "Application not found." });
         const app = updateRes.rows[0];
 
-        // 2. If status is 'Interview', Auto-Generate a Queue Token
         if (status === 'Interview') {
             const jobRes = await pool.query("SELECT event_id FROM jobs WHERE id = $1", [app.job_id]);
             const eventId = jobRes.rows[0]?.event_id;
             
             if (eventId) {
-                // Ensure we get the correct internal candidate ID to prevent foreign key errors
                 const candRes = await pool.query("SELECT id FROM candidates WHERE id::text = $1 OR unique_id = $1", [app.candidate_id]);
                 const realCandidateId = candRes.rows.length > 0 ? candRes.rows[0].id : null;
 
                 if (realCandidateId) {
-                    // Prevent duplicate tokens for the same job and candidate
                     const existing = await pool.query("SELECT id FROM event_queues WHERE candidate_id = $1 AND job_id = $2", [realCandidateId, app.job_id]);
                     
                     if (existing.rows.length === 0) {
-                        // Generate next token number
                         const tokenRes = await pool.query("SELECT COALESCE(MAX(token_number), 0) + 1 as next_token FROM event_queues WHERE event_id = $1 AND job_id = $2", [eventId, app.job_id]);
                         const nextToken = tokenRes.rows[0].next_token;
                         
-                        // Insert into live queue
                         await pool.query(
                             "INSERT INTO event_queues (event_id, job_id, candidate_id, token_number, status) VALUES ($1, $2, $3, $4, 'waiting')",
                             [eventId, app.job_id, realCandidateId, nextToken]
@@ -583,7 +642,6 @@ router.put('/applications/:appId/status', async (req, res) => {
     }
 });
 
-// UPGRADED: LIVE QUEUE FETCH WITH APPLICATION DATA
 router.get('/:employerId/events/:eventId/queue', async (req, res) => {
     const { eventId } = req.params;
     const { jobId } = req.query;
