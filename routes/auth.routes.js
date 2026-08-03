@@ -2,8 +2,45 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
+// =====================================================================
+// --- FILE UPLOAD SETUP FOR EMPLOYER LOGOS (MAX 2MB) ---
+// =====================================================================
+const uploadDir = path.join(__dirname, '../uploads/logos');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, uploadDir);
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'org-logo-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only JPG, PNG, and PDF are allowed.'));
+        }
+    }
+});
+
+
+// =====================================================================
 // --- CANDIDATE REGISTRATION ---
+// =====================================================================
 router.post('/candidate/register', async (req, res) => {
     const data = req.body;
     
@@ -120,29 +157,116 @@ router.post('/candidate/register', async (req, res) => {
     }
 });
 
-// --- EMPLOYER REGISTRATION ---
-router.post('/employer/register', async (req, res) => {
-    const { company_name, email_domain, gst_cin, industry, sector, company_size, website, hq_city, about_company, hr_name, hr_phone, email, password } = req.body;
+
+// =====================================================================
+// --- EMPLOYER REGISTRATION (NEW ENTERPRISE ONBOARDING) ---
+// =====================================================================
+router.post('/employer/register', upload.single('org_logo'), async (req, res) => {
+    const data = req.body;
+
     try {
-        const cleanEmail = email ? email.trim().toLowerCase() : "";
+        // Point of Contact 1 Email will serve as the Master Login Email
+        const emailInput = data.poc1_email || data.email;
+        const cleanEmail = emailInput ? emailInput.trim().toLowerCase() : "";
+        
+        if (!cleanEmail) {
+            return res.status(400).json({ success: false, message: "Point of Contact 1 Email is required." });
+        }
+
         const userExists = await pool.query("SELECT * FROM employers WHERE LOWER(email) = $1", [cleanEmail]);
         if (userExists.rows.length > 0) return res.status(400).json({ success: false, message: "Email already registered." });
         
         const salt = await bcrypt.genSalt(10);
-        const password_hash = await bcrypt.hash(password, salt);
+        const password_hash = await bcrypt.hash(data.password, salt);
+
+        // Handle uploaded file URL (if any)
+        const logoUrl = req.file ? `/uploads/logos/${req.file.filename}` : null;
+
+        // Helper to safely parse arrays from frontend FormData (like core_sectors)
+        const parseArray = (input) => {
+            if (!input) return [];
+            if (Array.isArray(input)) return input;
+            try { return JSON.parse(input); } catch (e) { return [input]; }
+        };
+
+        const query = `
+            INSERT INTO employers (
+                company_name, email, password_hash, password, status,
+                website, org_type, legal_structure, core_sectors, pincode, state, district, taluk,
+                mla_constituency, mp_constituency, resident_type, local_body_details, locality_area,
+                current_address, map_link, org_presence, multiple_branches,
+                poc1_title, poc1_name, poc1_designation, poc1_email, poc1_phone,
+                poc2_title, poc2_name, poc2_designation, poc2_email, poc2_phone,
+                employee_strength, hiring_for, hire_pwds, accepted_disabilities,
+                org_logo_url, digital_onboarding, source_of_discovery, gst_number, is_gst_verified
+            ) VALUES (
+                $1, $2, $3, $4, 'pending',
+                $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17,
+                $18, $19, $20, $21,
+                $22, $23, $24, $25, $26,
+                $27, $28, $29, $30, $31,
+                $32, $33, $34, $35,
+                $36, $37, $38, $39, $40
+            ) RETURNING id;
+        `;
+
+        const values = [
+            data.company_name, 
+            cleanEmail, 
+            password_hash, 
+            data.password, // Original DB column preserved based on your previous schema
+            data.website, 
+            data.org_type, 
+            data.legal_structure, 
+            parseArray(data.core_sectors), 
+            data.pincode, 
+            data.state, 
+            data.district, 
+            data.taluk,
+            data.mla_constituency, 
+            data.mp_constituency, 
+            data.resident_type, 
+            data.local_body_details, 
+            data.locality_area,
+            data.current_address, 
+            data.map_link, 
+            data.org_presence, 
+            data.multiple_branches === 'true' || data.multiple_branches === true,
+            data.poc1_title, 
+            data.poc1_name, 
+            data.poc1_designation, 
+            cleanEmail, 
+            data.poc1_phone,
+            data.poc2_title, 
+            data.poc2_name, 
+            data.poc2_designation, 
+            data.poc2_email, 
+            data.poc2_phone,
+            data.employee_strength, 
+            data.hiring_for, 
+            data.hire_pwds, 
+            parseArray(data.accepted_disabilities),
+            logoUrl, 
+            data.digital_onboarding === 'true' || data.digital_onboarding === true, 
+            data.source_of_discovery, 
+            data.gst_number, 
+            data.is_gst_verified === 'true' || data.is_gst_verified === true
+        ];
+
+        await pool.query(query, values);
         
-        await pool.query(`
-            INSERT INTO employers (company_name, email_domain, gst_cin, industry, sector, company_size, website, hq_city, about_company, hr_name, hr_phone, email, password_hash, password, status) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'pending')
-        `, [company_name, email_domain, gst_cin, industry, sector, company_size, website, hq_city, about_company, hr_name, hr_phone, cleanEmail, password_hash, password]);
-        
-        res.status(201).json({ success: true, message: "Registration submitted successfully." });
+        res.status(201).json({ success: true, message: "Employer registration submitted successfully." });
     } catch (error) { 
+        console.error("❌ Employer Registration Error:", error);
         res.status(500).json({ success: false, message: "Server error during registration." }); 
     }
 });
 
+
+// =====================================================================
 // --- MASTER AUTHENTICATION (LOGIN) ---
+// =====================================================================
 router.post('/login', async (req, res) => {
     const { role, password, company_name } = req.body; 
     const emailInput = req.body.email || req.body.identifier || "";
@@ -247,10 +371,10 @@ router.post('/login', async (req, res) => {
     }
 });
 
+
 // =====================================================================
 // --- CANDIDATE PROFILE: FETCH & UPDATE ---
 // =====================================================================
-
 router.get('/candidate/profile/:id', async (req, res) => {
     try {
         const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
@@ -355,7 +479,10 @@ router.put('/candidate/profile/update', async (req, res) => {
     }
 });
 
+
+// =====================================================================
 // --- FORGOT & RESET PASSWORD ---
+// =====================================================================
 router.post('/forgot-password', async (req, res) => {
     const { identifier } = req.body;
     const rawInput = identifier ? identifier.trim() : "";
