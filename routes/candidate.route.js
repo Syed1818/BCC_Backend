@@ -307,7 +307,7 @@ router.get('/:id/applications', async (req, res) => {
                    COALESCE(e.event_name, e.name) as event_name
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            LEFT JOIN events e ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
+            INNER JOIN events e ON j.event_id = e.id
             WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
             ORDER BY ja.applied_at DESC
         `, [req.params.id, candidateIntId.toString()]);
