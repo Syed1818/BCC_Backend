@@ -364,15 +364,42 @@ router.delete('/:id/history', async (req, res) => {
     }
 });
 
-// --- FEEDBACK ---
+// --- CANDIDATE FEEDBACK ROUTE ---
 router.post('/feedback', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.body.candidateId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
-        await pool.query("INSERT INTO candidate_feedback (candidate_id, overall_rating, registration_exp, interview_quality, event_management, video_url) VALUES ($1, $2, $3, $4, $5, $6)", 
-        [candCheck.rows[0].id, req.body.rating, req.body.registrationExp, req.body.interviewQuality, req.body.eventManagement, req.body.videoUrl]);
-        res.json({ success: true, message: "Feedback submitted successfully!" });
-    } catch (error) { res.status(500).json({ success: false }); }
+        const { candidateId, rating, companyName, registrationExp, interviewQuality, eventManagement, messageCategory, optionalComments, videoUrl } = req.body;
+        
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateId]);
+        if (candCheck.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Candidate not found." });
+        }
+        
+        const dbCandId = candCheck.rows[0].id;
+
+        await pool.query(`
+            INSERT INTO candidate_feedback 
+            (candidate_id, overall_rating, registration_exp, interview_quality, event_management, company_name, message_category, optional_comments, video_url, status) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Pending')
+        `, [
+            dbCandId, 
+            rating, 
+            registrationExp, 
+            interviewQuality, 
+            eventManagement, 
+            companyName || null, 
+            messageCategory || 'general', 
+            optionalComments || null, 
+            videoUrl || null
+        ]);
+
+        res.json({ 
+            success: true, 
+            message: "Feedback submitted successfully! Sent to employer for verification before publishing." 
+        });
+    } catch (error) {
+        console.error("❌ Feedback submission error:", error.message);
+        res.status(500).json({ success: false, message: "Server error submitting feedback: " + error.message });
+    }
 });
 
 module.exports = router;
