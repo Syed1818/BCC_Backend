@@ -545,4 +545,86 @@ router.delete('/team/:id', async (req, res) => {
     }
 });
 
+// --- INTERVIEW MANAGEMENT DASHBOARD ---
+router.get('/interviews/dashboard', async (req, res) => {
+    try {
+        // 1. Get Live Event IDs
+        const liveEventsRes = await pool.query("SELECT id FROM events WHERE status = 'live'");
+        const liveEventIds = liveEventsRes.rows.map(e => e.id);
+        
+        if (liveEventIds.length === 0) {
+            return res.json({ 
+                success: true, 
+                data: { activeStalls: 0, scheduled: 0, avgWaitTime: 0, stalls: [], activities: [] }
+            });
+        }
+
+        // 2. Get Stalls with Queue Stats
+        const stallsQuery = `
+            SELECT 
+                s.code as stall_code,
+                emp.company_name,
+                COUNT(q.id) FILTER (WHERE q.status = 'waiting') as waiting,
+                COUNT(q.id) FILTER (WHERE q.status = 'completed') as completed,
+                MAX(q.called_at) as last_called
+            FROM venue_stalls s
+            JOIN employers emp ON s.employer_id = emp.id
+            LEFT JOIN jobs j ON j.employer_id = emp.id AND j.event_id = s.event_id
+            LEFT JOIN event_queues q ON q.job_id = j.id AND CAST(q.created_at AS DATE) = CURRENT_DATE
+            WHERE s.event_id = ANY($1)
+            GROUP BY s.code, emp.company_name
+            ORDER BY s.code ASC
+        `;
+        const stallsRes = await pool.query(stallsQuery, [liveEventIds]);
+
+        // 3. Overall stats calculations
+        let totalWaiting = 0;
+        let totalCompleted = 0;
+        stallsRes.rows.forEach(s => {
+            totalWaiting += parseInt(s.waiting || 0);
+            totalCompleted += parseInt(s.completed || 0);
+        });
+
+        // Calculate average wait time based on completed queues (approximate fallback to 12 if none)
+        const avgWaitQuery = `
+            SELECT COALESCE(EXTRACT(EPOCH FROM AVG(called_at - created_at))/60, 12) as avg_min 
+            FROM event_queues 
+            WHERE event_id = ANY($1) AND status IN ('called', 'completed') AND DATE(created_at) = CURRENT_DATE
+        `;
+        const avgWaitRes = await pool.query(avgWaitQuery, [liveEventIds]);
+        const avgWaitTime = Math.round(avgWaitRes.rows[0].avg_min);
+
+        // 4. Recent Employer Activity
+        const activityQuery = `
+            SELECT 
+                emp.company_name,
+                ja.status as action,
+                ja.applied_at as time
+            FROM job_applications ja
+            JOIN jobs j ON ja.job_id = j.id
+            JOIN employers emp ON ja.employer_id = emp.id
+            WHERE j.event_id = ANY($1)
+              AND ja.status IN ('shortlisted', 'interviewed', 'hired')
+            ORDER BY ja.applied_at DESC
+            LIMIT 10
+        `;
+        const activityRes = await pool.query(activityQuery, [liveEventIds]);
+
+        res.json({
+            success: true,
+            data: {
+                activeStalls: stallsRes.rows.length,
+                scheduled: totalWaiting + totalCompleted,
+                avgWaitTime: avgWaitTime,
+                stalls: stallsRes.rows,
+                activities: activityRes.rows
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ Error fetching interview dashboard:", error);
+        res.status(500).json({ success: false, message: "Server error fetching interview data." });
+    }
+});
+
 module.exports = router;
