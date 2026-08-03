@@ -123,58 +123,155 @@ router.put('/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// --- GLOBAL JOB BOARD (EXCLUDING EVENT-SPECIFIC JOBS) ---
+
+// --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
 router.get('/:id/jobs', async (req, res) => {
     try {
-        const candidateRes = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
-        if (candidateRes.rows.length === 0) return res.status(404).json({ success: false });
-        const candidate = candidateRes.rows[0];
+        const candidateId = req.params.id;
 
-        const jobsRes = await pool.query(
-            "SELECT * FROM jobs WHERE status = 'approved' AND (event_id IS NULL OR event_id::text = '0')"
+        // 1. Fetch Candidate Profile (to use for matching logic)
+        const profileResult = await pool.query(
+            "SELECT * FROM candidates WHERE unique_id = $1", 
+            [candidateId]
         );
         
-        const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidate.id]);
-        const savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
+        let candidateProfile = null;
+        if (profileResult.rows.length > 0) {
+            candidateProfile = profileResult.rows[0];
+        }
 
-        const matchedJobs = jobsRes.rows.map(job => {
-            let score = 0;
-            let jobSkills = []; try { jobSkills = typeof job.skills_required === 'string' ? JSON.parse(job.skills_required) : (job.skills_required || []); } catch(e){}
-            let candidateSkills = []; try { candidateSkills = typeof candidate.skills === 'string' ? JSON.parse(candidate.skills) : (candidate.skills || []); } catch(e){}
-            
-            if (jobSkills.length > 0) {
-                const matchedSkills = jobSkills.filter(js => candidateSkills.some(cs => cs.toLowerCase() === js.toLowerCase()));
-                score += (matchedSkills.length / jobSkills.length) * 50;
-            } else { score += 50; }
-            
-            let preferredLocs = []; try { preferredLocs = typeof candidate.preferred_locations === 'string' ? JSON.parse(candidate.preferred_locations) : []; } catch(e){}
-            if ((job.location || "").toLowerCase() === (candidate.district || "").toLowerCase() || preferredLocs.some(loc => loc.toLowerCase() === (job.location || "").toLowerCase()) || candidate.willing_to_relocate) score += 20;
-            
-            if (!job.qualification_required || job.qualification_required === "Any Degree" || job.qualification_required === candidate.highest_qualification || candidate.highest_qualification === "PG Degree" || candidate.highest_qualification === "BE/B-Tech") score += 15;
-            
-            let prefRoles = []; try { prefRoles = typeof candidate.preferred_roles === 'string' ? JSON.parse(candidate.preferred_roles) : []; } catch(e){}
-            if (prefRoles.some(role => (job.title || "").toLowerCase().includes(role.toLowerCase()))) score += 15;
-            
-            return { 
-                id: job.id, 
-                company: job.company_name, 
-                title: job.title, 
-                type: job.job_type, 
-                location: job.location, 
-                qualification: job.qualification_required, 
-                experience: job.experience_required, 
-                salary: job.salary_range, 
-                skills: jobSkills, 
-                matchScore: Math.round(score),
+        // 2. Fetch all Active Jobs. 
+        // LEFT JOIN with applications to persist "Applied" state across refreshes.
+        // LEFT JOIN with events to display the Event connection badge.
+        const jobsQuery = `
+            SELECT 
+                j.*, 
+                e.event_name,
+                CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
+                a.status as application_status
+            FROM jobs j
+            LEFT JOIN applications a 
+                ON j.id = a.job_id AND a.candidate_id = $1
+            LEFT JOIN events e 
+                ON j.event_id = e.id
+            WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
+            ORDER BY j.created_at DESC;
+        `;
+
+        const jobsResult = await pool.query(jobsQuery, [candidateId]);
+        let jobs = jobsResult.rows;
+
+        // Fetch saved jobs for bookmark toggles
+        let savedJobIds = new Set();
+        if (candidateProfile) {
+            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateProfile.id]);
+            savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
+        }
+
+        // 3. Process jobs: Parse JSON and compute deterministic match score
+        const processedJobs = jobs.map(job => {
+            // Safely parse job skills
+            let jobSkills = [];
+            try {
+                if (typeof job.skills === 'string') {
+                    jobSkills = JSON.parse(job.skills);
+                } else if (typeof job.skills_required === 'string') {
+                    jobSkills = JSON.parse(job.skills_required);
+                } else if (Array.isArray(job.skills)) {
+                    jobSkills = job.skills;
+                } else if (Array.isArray(job.skills_required)) {
+                    jobSkills = job.skills_required;
+                }
+            } catch(e) {}
+
+            // Deterministic Match Calculation Logic
+            let matchScore = 50; // Default base
+
+            if (candidateProfile) {
+                let matchedWeights = 0;
+                let totalWeights = 4; // Location, Job Type, Education, Skills
+
+                // Weight 1: Location Match (25%)
+                let candLocations = [];
+                try { candLocations = JSON.parse(candidateProfile.preferred_locations || "[]"); } catch(e){}
+                if (
+                    candLocations.includes(job.location) || 
+                    candLocations.includes("Remote") || 
+                    job.location === "Remote" ||
+                    (job.location && candLocations.some(loc => job.location.toLowerCase().includes(loc.toLowerCase())))
+                ) {
+                    matchedWeights += 1;
+                }
+
+                // Weight 2: Job Type Match (25%)
+                if (
+                    candidateProfile.preferred_job_type && 
+                    job.job_type && 
+                    candidateProfile.preferred_job_type.toLowerCase() === job.job_type.toLowerCase()
+                ) {
+                    matchedWeights += 1;
+                }
+
+                // Weight 3: Education/Qualification Match (25%)
+                const jobQual = job.qualification_required || job.qualification || "";
+                if (
+                    candidateProfile.highest_qualification && 
+                    jobQual && 
+                    candidateProfile.highest_qualification.toLowerCase() === jobQual.toLowerCase()
+                ) {
+                    matchedWeights += 1;
+                } else if (!jobQual || jobQual.toLowerCase() === 'any degree' || jobQual.toLowerCase() === 'any') {
+                    matchedWeights += 1; // Give point if job has no strict requirement
+                }
+
+                // Weight 4: Skills Match (25%)
+                let candSkills = [];
+                try { 
+                    candSkills = JSON.parse(candidateProfile.technical_skills || "[]").concat(JSON.parse(candidateProfile.non_technical_skills || "[]")); 
+                    if (candSkills.length === 0 && candidateProfile.skills) {
+                        candSkills = JSON.parse(candidateProfile.skills || "[]");
+                    }
+                } catch(e){}
+
+                if (jobSkills.length === 0) {
+                     matchedWeights += 1; // No specific skills required
+                } else if (candSkills.length > 0) {
+                     const lowerCandSkills = candSkills.map(s => s.toLowerCase());
+                     const overlap = jobSkills.filter(s => lowerCandSkills.includes(s.toLowerCase()));
+                     if (overlap.length > 0) {
+                         matchedWeights += (overlap.length / jobSkills.length);
+                     }
+                }
+
+                // Calculate final percentage and round it
+                matchScore = Math.round((matchedWeights / totalWeights) * 100);
+            }
+
+            return {
+                id: job.id,
+                company: job.company_name || job.company,
+                title: job.title,
+                type: job.job_type || job.type,
+                location: job.location,
+                qualification: job.qualification_required || job.qualification,
+                experience: job.experience_required || job.experience,
+                salary: job.salary_range || job.salary,
+                skills: jobSkills,
+                event_name: job.event_name,
+                hasApplied: job.has_applied,
+                status: job.application_status || job.status,
+                matchScore: matchScore > 0 ? matchScore : 15,
                 isSaved: savedJobIds.has(job.id)
             };
         }).sort((a, b) => b.matchScore - a.matchScore);
 
-        res.json({ success: true, data: matchedJobs });
-    } catch (error) { 
-        res.status(500).json({ success: false }); 
+        res.json({ success: true, data: processedJobs });
+    } catch (error) {
+        console.error("❌ Failed to fetch matched jobs:", error);
+        res.status(500).json({ success: false, message: "Server error fetching jobs." });
     }
 });
+
 
 // --- APPLICATIONS & EVENTS ---
 router.get('/:id/applications', async (req, res) => {
