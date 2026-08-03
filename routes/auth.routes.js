@@ -191,7 +191,6 @@ router.post('/employer/register', function (req, res, next) {
             ) RETURNING id;
         `;
 
-        // FIXED: Removed JSON.stringify() from arrays so Postgres reads them properly
         const values = [
             data.company_name || "", 
             cleanEmail, 
@@ -200,7 +199,7 @@ router.post('/employer/register', function (req, res, next) {
             data.website || "", 
             data.org_type || "", 
             data.legal_structure || "", 
-            parseArray(data.core_sectors), // <-- FIXED
+            parseArray(data.core_sectors),
             data.pincode || "", 
             data.state || "", 
             data.district || "", 
@@ -227,7 +226,7 @@ router.post('/employer/register', function (req, res, next) {
             data.employee_strength || "", 
             data.hiring_for || "", 
             data.hire_pwds || "", 
-            parseArray(data.accepted_disabilities), // <-- FIXED
+            parseArray(data.accepted_disabilities),
             logoUrl, 
             data.digital_onboarding === 'true' || data.digital_onboarding === true, 
             data.source_of_discovery || "", 
@@ -237,12 +236,14 @@ router.post('/employer/register', function (req, res, next) {
 
         const result = await pool.query(query, values);
         
+        // --- ID FORMATTING FIX ---
         const employerId = result.rows[0].id;
+        const formattedId = String(employerId).padStart(9, '0');
 
         res.status(201).json({ 
             success: true, 
             message: "Employer registration submitted successfully.",
-            uniqueId: `EMP-${employerId}` 
+            uniqueId: `BCC-UMP-EMP-${formattedId}` 
         });
 
     } catch (error) { 
@@ -252,6 +253,172 @@ router.post('/employer/register', function (req, res, next) {
             return res.status(400).json({ success: false, message: `Database Setup Error: ${error.detail || error.message}. Please check that your Postgres columns match exactly.` }); 
         }
         res.status(500).json({ success: false, message: "Server error during registration." }); 
+    }
+});
+
+
+// =====================================================================
+// --- EMPLOYER PROFILE & PoC MANAGEMENT (NEW!) ---
+// =====================================================================
+
+// 1. Fetch Company Profile Data
+router.get('/employer/profile/:id', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT * FROM employers WHERE id = $1", [req.params.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Employer profile not found" });
+        }
+        
+        const db = result.rows[0];
+        const profileData = {
+            id: db.id,
+            uniqueId: `BCC-UMP-EMP-${String(db.id).padStart(9, '0')}`,
+            company_name: db.company_name,
+            email: db.email,
+            website: db.website,
+            org_type: db.org_type,
+            legal_structure: db.legal_structure,
+            core_sectors: db.core_sectors || [],
+            pincode: db.pincode,
+            state: db.state,
+            district: db.district,
+            taluk: db.taluk,
+            mla_constituency: db.mla_constituency,
+            mp_constituency: db.mp_constituency,
+            resident_type: db.resident_type,
+            local_body_details: db.local_body_details,
+            locality_area: db.locality_area,
+            current_address: db.current_address,
+            map_link: db.map_link,
+            org_presence: db.org_presence,
+            multiple_branches: db.multiple_branches,
+            poc1_title: db.poc1_title,
+            poc1_name: db.poc1_name,
+            poc1_designation: db.poc1_designation,
+            poc1_email: db.poc1_email,
+            poc1_phone: db.poc1_phone,
+            poc2_title: db.poc2_title,
+            poc2_name: db.poc2_name,
+            poc2_designation: db.poc2_designation,
+            poc2_email: db.poc2_email,
+            poc2_phone: db.poc2_phone,
+            employee_strength: db.employee_strength,
+            hiring_for: db.hiring_for,
+            hire_pwds: db.hire_pwds,
+            accepted_disabilities: db.accepted_disabilities || [],
+            org_logo_url: db.org_logo_url,
+            gst_number: db.gst_number,
+            is_gst_verified: db.is_gst_verified,
+            status: db.status,
+            about_us: db.about_us || ""
+        };
+
+        res.json({ success: true, data: profileData });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error fetching employer profile." });
+    }
+});
+
+// 2. Update Company Profile Data
+router.put('/employer/profile/update', upload.single('org_logo'), async (req, res) => {
+    const d = req.body;
+    try {
+        const parseArray = (input) => {
+            if (!input) return [];
+            if (Array.isArray(input)) return input;
+            try { return JSON.parse(input); } catch (e) { return [input]; }
+        };
+
+        let logoUpdateQuery = "";
+        let logoValue = [];
+        let valCount = 36;
+
+        if (req.file) {
+            const logoUrl = `/uploads/logos/${req.file.filename}`;
+            logoUpdateQuery = `, org_logo_url = $${valCount}`;
+            logoValue.push(logoUrl);
+            valCount++;
+        }
+
+        const updateQuery = `
+            UPDATE employers SET 
+                company_name = $1, website = $2, org_type = $3, legal_structure = $4, core_sectors = $5,
+                pincode = $6, state = $7, district = $8, taluk = $9, mla_constituency = $10,
+                mp_constituency = $11, resident_type = $12, local_body_details = $13, locality_area = $14,
+                current_address = $15, map_link = $16, org_presence = $17, multiple_branches = $18,
+                poc1_title = $19, poc1_name = $20, poc1_designation = $21, poc1_phone = $22,
+                poc2_title = $23, poc2_name = $24, poc2_designation = $25, poc2_email = $26, poc2_phone = $27,
+                employee_strength = $28, hiring_for = $29, hire_pwds = $30, accepted_disabilities = $31,
+                gst_number = $32, is_gst_verified = $33, about_us = $34
+                ${logoUpdateQuery}
+            WHERE id = $35
+        `;
+
+        const values = [
+            d.company_name, d.website, d.org_type, d.legal_structure, parseArray(d.core_sectors),
+            d.pincode, d.state, d.district, d.taluk, d.mla_constituency,
+            d.mp_constituency, d.resident_type, d.local_body_details, d.locality_area,
+            d.current_address, d.map_link, d.org_presence, d.multiple_branches === 'true',
+            d.poc1_title, d.poc1_name, d.poc1_designation, d.poc1_phone,
+            d.poc2_title, d.poc2_name, d.poc2_designation, d.poc2_email, d.poc2_phone,
+            d.employee_strength, d.hiring_for, d.hire_pwds, parseArray(d.accepted_disabilities),
+            d.gst_number, d.is_gst_verified === 'true', d.about_us || null,
+            d.id, ...logoValue
+        ];
+
+        await pool.query(updateQuery, values);
+        res.json({ success: true, message: "Company profile updated successfully." });
+    } catch (error) {
+        console.error("Profile Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating profile." });
+    }
+});
+
+// 3. Fetch Added PoCs (Sub-Accounts)
+router.get('/employer/:id/hrs', async (req, res) => {
+    try {
+        const result = await pool.query("SELECT id, full_name, email, phone, designation, status FROM employer_hrs WHERE employer_id = $1", [req.params.id]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error fetching PoC details." });
+    }
+});
+
+// 4. Add a new PoC (Max 3 Allowed)
+router.post('/employer/:id/hrs', async (req, res) => {
+    const employerId = req.params.id;
+    const { full_name, email, phone, designation, password } = req.body;
+    
+    try {
+        const countRes = await pool.query("SELECT COUNT(*) FROM employer_hrs WHERE employer_id = $1", [employerId]);
+        if (parseInt(countRes.rows[0].count) >= 3) {
+            return res.status(400).json({ success: false, message: "Maximum of 3 additional PoC accounts allowed." });
+        }
+
+        const emailCheck = await pool.query("SELECT email FROM employers WHERE email = $1 UNION SELECT email FROM employer_hrs WHERE email = $1", [email]);
+        if (emailCheck.rows.length > 0) return res.status(400).json({ success: false, message: "This Email is already associated with an account." });
+
+        const salt = await bcrypt.genSalt(10);
+        const password_hash = await bcrypt.hash(password, salt);
+
+        await pool.query(
+            "INSERT INTO employer_hrs (employer_id, full_name, email, phone, designation, password_hash, status) VALUES ($1, $2, $3, $4, $5, $6, 'active')",
+            [employerId, full_name, email, phone, designation, password_hash]
+        );
+
+        res.json({ success: true, message: "PoC account created successfully. They can now log in!" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error creating PoC account." });
+    }
+});
+
+// 5. Delete a PoC Sub-Account
+router.delete('/employer/hrs/:hrId', async (req, res) => {
+    try {
+        await pool.query("DELETE FROM employer_hrs WHERE id = $1", [req.params.hrId]);
+        res.json({ success: true, message: "PoC account removed." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error removing PoC account." });
     }
 });
 
