@@ -164,6 +164,11 @@ router.post('/candidate/register', async (req, res) => {
 router.post('/employer/register', upload.single('org_logo'), async (req, res) => {
     const data = req.body;
 
+    console.log("\n=============================================");
+    console.log("🏢 INCOMING EMPLOYER PAYLOAD RECEIVED:");
+    console.log("=============================================");
+    console.log(data);
+
     try {
         // Point of Contact 1 Email will serve as the Master Login Email
         const emailInput = data.poc1_email || data.email;
@@ -182,7 +187,7 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
         // Handle uploaded file URL (if any)
         const logoUrl = req.file ? `/uploads/logos/${req.file.filename}` : null;
 
-        // Helper to safely parse arrays from frontend FormData (like core_sectors)
+        // HELPER: Safely parse arrays from frontend FormData
         const parseArray = (input) => {
             if (!input) return [];
             if (Array.isArray(input)) return input;
@@ -215,11 +220,11 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
             data.company_name, 
             cleanEmail, 
             password_hash, 
-            data.password, // Original DB column preserved based on your previous schema
+            data.password, // Original DB column preserved based on your schema
             data.website, 
             data.org_type, 
             data.legal_structure, 
-            parseArray(data.core_sectors), 
+            JSON.stringify(parseArray(data.core_sectors)), // Formatted specifically for Postgres JSONB columns
             data.pincode, 
             data.state, 
             data.district, 
@@ -246,7 +251,7 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
             data.employee_strength, 
             data.hiring_for, 
             data.hire_pwds, 
-            parseArray(data.accepted_disabilities),
+            JSON.stringify(parseArray(data.accepted_disabilities)), // Formatted for Postgres JSONB
             logoUrl, 
             data.digital_onboarding === 'true' || data.digital_onboarding === true, 
             data.source_of_discovery, 
@@ -254,8 +259,12 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
             data.is_gst_verified === 'true' || data.is_gst_verified === true
         ];
 
-        await pool.query(query, values);
+        const result = await pool.query(query, values);
         
+        console.log("\n✅ SUCCESS: EMPLOYER REGISTERED!");
+        console.log(`Database Row Created for Company: ${data.company_name}`);
+        console.log("---------------------------------------------\n");
+
         res.status(201).json({ success: true, message: "Employer registration submitted successfully." });
     } catch (error) { 
         console.error("❌ Employer Registration Error:", error);
@@ -304,6 +313,7 @@ router.post('/login', async (req, res) => {
                 data: { id: admin.unique_id || admin.id, name: admin.full_name || 'Admin', email: admin.email, role: teamMember ? admin.role : 'admin', permissions: teamMember ? admin.permissions : {} } 
             });
         }
+        
         if (role === 'employer') {
             const cleanInput = rawInput.toLowerCase();
             const cleanCompany = company_name ? company_name.trim().toLowerCase() : "";
