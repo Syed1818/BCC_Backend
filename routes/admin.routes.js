@@ -86,6 +86,8 @@ router.get('/live-events', async (req, res) => {
 
         const dashboardData = await Promise.all(liveEvents.map(async (event) => {
             const regCount = await pool.query('SELECT COUNT(*) FROM event_candidate_registrations WHERE event_id = $1', [event.id]);
+            const empRegCount = await pool.query('SELECT COUNT(*) FROM employer_event_stalls WHERE event_id = $1', [event.id]);
+            
             const candidateAtt = await pool.query("SELECT COUNT(*) FROM event_attendance WHERE event_id = $1 AND user_type = 'candidate'", [event.id]);
             const employerAtt = await pool.query("SELECT COUNT(*) FROM event_attendance WHERE event_id = $1 AND user_type = 'employer'", [event.id]);
             const interviews = await pool.query("SELECT COUNT(*) FROM event_interviews WHERE event_id = $1 AND status = 'interviewed'", [event.id]);
@@ -93,7 +95,10 @@ router.get('/live-events', async (req, res) => {
 
             return {
                 id: event.id, name: event.name, location: event.location,
-                registrations: parseInt(regCount.rows[0].count),
+                registrations: { 
+                    candidates: parseInt(regCount.rows[0].count), 
+                    employers: parseInt(empRegCount.rows[0].count) 
+                },
                 attendance: { candidates: parseInt(candidateAtt.rows[0].count), employers: parseInt(employerAtt.rows[0].count) },
                 interviews: parseInt(interviews.rows[0].count),
                 offers: parseInt(offers.rows[0].count)
