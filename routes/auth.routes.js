@@ -128,10 +128,25 @@ router.post('/candidate/register', async (req, res) => {
 // =====================================================================
 // --- EMPLOYER REGISTRATION (NEW ENTERPRISE ONBOARDING) ---
 // =====================================================================
-router.post('/employer/register', upload.single('org_logo'), async (req, res) => {
+
+// NEW: Wrapped in Multer error handler to prevent silent 400 Bad Request crashes
+router.post('/employer/register', function (req, res, next) {
+    upload.single('org_logo')(req, res, function (err) {
+        if (err instanceof multer.MulterError) {
+            return res.status(400).json({ success: false, message: `File Upload Error: ${err.message}. Try uploading a smaller file.` });
+        } else if (err) {
+            return res.status(400).json({ success: false, message: `File Upload Error: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     const data = req.body;
 
     try {
+        if (!data || Object.keys(data).length === 0) {
+            return res.status(400).json({ success: false, message: "Data payload is empty. Please ensure you are filling out all required fields." });
+        }
+
         const emailInput = data.poc1_email || data.email;
         const cleanEmail = emailInput ? emailInput.trim().toLowerCase() : "";
         
@@ -141,7 +156,7 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
 
         const userExists = await pool.query("SELECT * FROM employers WHERE LOWER(email) = $1", [cleanEmail]);
         if (userExists.rows.length > 0) {
-            return res.status(400).json({ success: false, message: "This Official Email ID is already registered to another company." });
+            return res.status(400).json({ success: false, message: "This Official Email ID is already registered to another company. Please log in instead." });
         }
         
         const salt = await bcrypt.genSalt(10);
@@ -222,21 +237,20 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
 
         const result = await pool.query(query, values);
         
-        // GRAB THE GENERATED ID AND SEND IT BACK!
         const employerId = result.rows[0].id;
 
         res.status(201).json({ 
             success: true, 
             message: "Employer registration submitted successfully.",
-            uniqueId: `EMP-${employerId}` // Formats the ID nicely for the UI
+            uniqueId: `EMP-${employerId}` 
         });
 
     } catch (error) { 
         console.error("❌ Employer Registration Database Error:", error);
         
-        // This will strictly catch missing database fields and push the exact error to the UI
+        // This will STRICTLY catch missing DB fields or array errors and push it to the bright red UI box
         if (error.code) { 
-            return res.status(400).json({ success: false, message: `Database Error: ${error.detail || error.message}` }); 
+            return res.status(400).json({ success: false, message: `Database Setup Error: ${error.detail || error.message}. Please check that your Postgres columns match exactly.` }); 
         }
         res.status(500).json({ success: false, message: "Server error during registration." }); 
     }
