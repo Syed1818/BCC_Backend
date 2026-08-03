@@ -1,6 +1,48 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
+const bcrypt = require('bcrypt');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// =====================================================================
+// --- FILE UPLOAD SETUP FOR COMPLIANCE DOCS & BROCHURES ---
+// =====================================================================
+const uploadDir = path.join(__dirname, '../uploads/employer_docs');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, uploadDir);
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB limit per file based on spreadsheet
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only JPG, PNG, and PDF are allowed.'));
+        }
+    }
+});
+
+// Helper to safely parse arrays from frontend FormData
+const parseArray = (input) => {
+    if (!input) return [];
+    if (Array.isArray(input)) return input;
+    try { return JSON.parse(input); } catch (e) { return [input]; }
+};
 
 // --- EMPLOYER DASHBOARD & ANALYTICS ---
 router.get('/:employerId/dashboard', async (req, res) => {
@@ -101,7 +143,10 @@ router.get('/:employerId/analytics', async (req, res) => {
     }
 });
 
-// --- PROFILE & STALLS ---
+// =====================================================================
+// --- COMPREHENSIVE PROFILE FETCH & UPDATE ---
+// =====================================================================
+
 router.get('/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -118,17 +163,8 @@ router.get('/profile/:employerId', async (req, res) => {
             }
         }
 
-        const result = await pool.query(
-            `SELECT id, company_name as "companyName", COALESCE(hr_name, '') as "fullName", 
-                    COALESCE(designation, '') as designation, email, 
-                    COALESCE(hr_phone, '') as mobile, 
-                    COALESCE(department, 'tech') as department, 
-                    COALESCE(language, 'en') as language, 
-                    COALESCE(about_company, '') as about, 
-                    photo_url as "photoUrl" 
-             FROM employers WHERE id = $1`, 
-            [dbEmpId]
-        );
+        // Fetching the complete row to support pre-filling all Excel fields
+        const result = await pool.query("SELECT * FROM employers WHERE id = $1", [dbEmpId]);
         
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Employer profile not found." });
@@ -150,11 +186,7 @@ router.put('/profile/:employerId/photo', async (req, res) => {
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
-        await pool.query(
-            "UPDATE employers SET photo_url = $1 WHERE id = $2",
-            [photoUrl, dbEmpId]
-        );
-
+        await pool.query("UPDATE employers SET photo_url = $1 WHERE id = $2", [photoUrl, dbEmpId]);
         res.json({ success: true, message: "Profile photo saved successfully!" });
     } catch (error) {
         console.error("❌ Error updating employer photo:", error);
@@ -162,6 +194,116 @@ router.put('/profile/:employerId/photo', async (req, res) => {
     }
 });
 
+// NEW: Comprehensive Profile Update (Handles Text + Files)
+router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc', maxCount: 1 }, { name: 'brochure', maxCount: 1 }]), async (req, res) => {
+    const { employerId } = req.params;
+    const data = req.body;
+    
+    try {
+        let dbEmpId = employerId;
+        if (employerId.includes('@') || isNaN(employerId)) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+            if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
+            else return res.status(404).json({ success: false, message: "Employer not found." });
+        }
+
+        // Handle uploaded file URLs
+        const complianceDocUrl = req.files && req.files['compliance_doc'] ? `/uploads/employer_docs/${req.files['compliance_doc'][0].filename}` : null;
+        const brochureUrl = req.files && req.files['brochure'] ? `/uploads/employer_docs/${req.files['brochure'][0].filename}` : null;
+
+        // Dynamic Update Builder to only update provided fields without erasing existing ones
+        const updateFields = [];
+        const values = [];
+        let queryIndex = 1;
+
+        // Map expected incoming fields to DB columns
+        const fieldsToUpdate = {
+            company_name: data.company_name,
+            org_type: data.org_type,
+            legal_structure: data.legal_structure,
+            core_sectors: parseArray(data.core_sectors),
+            website: data.website,
+            about_company: data.about_company,
+            country: data.country || 'India',
+            pincode: data.pincode,
+            state: data.state,
+            district: data.district,
+            taluk: data.taluk,
+            mla_constituency: data.mla_constituency,
+            mp_constituency: data.mp_constituency,
+            resident_type: data.resident_type,
+            local_body_details: data.local_body_details,
+            locality_area: data.locality_area,
+            current_address: data.current_address,
+            map_link: data.map_link,
+            org_presence: data.org_presence,
+            multiple_branches: data.multiple_branches,
+            poc1_title: data.poc1_title,
+            poc1_name: data.poc1_name,
+            poc1_designation: data.poc1_designation,
+            poc1_email: data.poc1_email,
+            poc1_phone: data.poc1_phone,
+            poc2_title: data.poc2_title,
+            poc2_name: data.poc2_name,
+            poc2_designation: data.poc2_designation,
+            poc2_email: data.poc2_email,
+            poc2_phone: data.poc2_phone,
+            employee_strength: data.employee_strength,
+            hiring_for: data.hiring_for,
+            hire_pwds: data.hire_pwds,
+            accepted_disabilities: parseArray(data.accepted_disabilities),
+            sector_preference: data.sector_preference,
+            preferred_opportunity_types: parseArray(data.preferred_opportunity_types),
+            preferred_job_type: data.preferred_job_type,
+            engagement_preference: data.engagement_preference,
+            joining_preference: data.joining_preference,
+            preferred_job_location: data.preferred_job_location,
+            social_facebook: data.social_facebook,
+            social_instagram: data.social_instagram,
+            social_linkedin: data.social_linkedin,
+            social_youtube: data.social_youtube,
+            social_x: data.social_x,
+            social_whatsapp: data.social_whatsapp,
+            social_github: data.social_github,
+            notification_preferences: parseArray(data.notification_preferences)
+        };
+
+        for (const [key, value] of Object.entries(fieldsToUpdate)) {
+            if (value !== undefined) {
+                updateFields.push(`${key} = $${queryIndex}`);
+                values.push(value);
+                queryIndex++;
+            }
+        }
+
+        // Add File Updates if present
+        if (complianceDocUrl) {
+            updateFields.push(`compliance_doc_url = $${queryIndex}`);
+            values.push(complianceDocUrl);
+            queryIndex++;
+        }
+        if (brochureUrl) {
+            updateFields.push(`brochure_url = $${queryIndex}`);
+            values.push(brochureUrl);
+            queryIndex++;
+        }
+
+        // Execute only if there is something to update
+        if (updateFields.length > 0) {
+            values.push(dbEmpId);
+            const updateQuery = `UPDATE employers SET ${updateFields.join(', ')} WHERE id = $${queryIndex} RETURNING id`;
+            await pool.query(updateQuery, values);
+        }
+
+        res.json({ success: true, message: "Profile updated successfully!" });
+    } catch (error) {
+        console.error("❌ Profile Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating profile: " + error.message });
+    }
+});
+
+
+// --- PROFILE & STALLS ---
 router.get('/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
     try {
