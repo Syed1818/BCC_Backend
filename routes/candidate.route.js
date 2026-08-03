@@ -279,19 +279,23 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS & EVENTS (CRASH-PROOF & FIXED) ---
+// --- APPLICATIONS & EVENTS (UNIVERSAL ID MATCHING) ---
 router.get('/:id/applications', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candidateStringId = req.params.id;
+
+        // 1. Get the candidate's integer ID from the candidates table just in case
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
+        // 2. Fetch applications matching either the string unique_id or integer id safely
         const result = await pool.query(`
             SELECT 
                 ja.id as application_id, 
                 j.title as job_title, 
                 j.company_name as company, 
                 ja.applied_at, 
-                ja.status, 
+                COALESCE(ja.status, 'Applied') as status, 
                 j.employer_id, 
                 j.id as job_id, 
                 CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
@@ -304,9 +308,9 @@ router.get('/:id/applications', async (req, res) => {
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id
-            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
+            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2
             ORDER BY ja.applied_at DESC
-        `, [req.params.id, candidateIntId.toString()]);
+        `, [candidateStringId, candidateIntId.toString()]);
         
         res.json({ success: true, data: result.rows });
     } catch (error) { 
