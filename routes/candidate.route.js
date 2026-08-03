@@ -2,14 +2,13 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
 
-// --- CANDIDATE PROFILE & DETAILS ---
+// --- SAVED JOBS ---
 router.get('/:id/saved-jobs', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id, unique_id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
 
         const candidateDbId = candCheck.rows[0].id;
-
         const result = await pool.query(`
             SELECT sj.id as saved_id, sj.status, sj.updated_at, j.id as job_id, j.title, j.company_name, j.location, j.job_type, j.salary_range, j.qualification_required
             FROM candidate_saved_jobs sj
@@ -28,11 +27,10 @@ router.get('/:id/saved-jobs', async (req, res) => {
 router.post('/saved-jobs/toggle', async (req, res) => {
     const { candidateId, jobId, draftData } = req.body;
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [candidateId]);
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateId]);
         if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
 
         const dbCandId = candCheck.rows[0].id;
-
         const existing = await pool.query(
             "SELECT id FROM candidate_saved_jobs WHERE candidate_id = $1 AND job_id = $2",
             [dbCandId, jobId]
@@ -63,12 +61,10 @@ router.delete('/saved-jobs/:savedId', async (req, res) => {
     }
 });
 
+// --- PROFILE ROUTES ---
 router.get('/:id', async (req, res) => {
     try {
-        const result = await pool.query(
-            "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
-            [req.params.id]
-        );
+        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         if (result.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found" });
         
         const dbUser = result.rows[0];
@@ -92,7 +88,7 @@ router.get('/:id', async (req, res) => {
 
 router.get('/profile/:id', async (req, res) => {
     try {
-        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         if (result.rows.length === 0) return res.status(404).json({ success: false });
         const dbUser = result.rows[0];
         res.json({ success: true, data: {
@@ -123,7 +119,7 @@ router.put('/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// --- WITHDRAW APPLICATION ROUTE ---
+// --- WITHDRAW APPLICATION ---
 router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -135,7 +131,6 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
             candidateIntId = profileResult.rows[0].id;
         }
 
-        // Delete the application securely
         await pool.query(
             "DELETE FROM job_applications WHERE job_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)",
             [jobId, candidateStringId, candidateIntId.toString()]
@@ -148,39 +143,26 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     }
 });
 
-
-// --- GLOBAL JOB BOARD (STRICTLY EVENT JOBS ONLY) ---
+// --- GLOBAL JOB BOARD ---
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
-
-        // 1. Fetch Candidate Profile 
-        const profileResult = await pool.query(
-            "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
-            [candidateStringId]
-        );
+        const profileResult = await pool.query("SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         
         let candidateProfile = null;
         let candidateIntId = 0; 
-        
         if (profileResult.rows.length > 0) {
             candidateProfile = profileResult.rows[0];
-            candidateIntId = candidateProfile.id; // DB expects an Integer
+            candidateIntId = candidateProfile.id;
         }
 
-        // 2. Fetch ONLY Jobs linked to an Event
-        // INNER JOIN events completely removes normal jobs from this list.
         const jobsQuery = `
-            SELECT 
-                j.*, 
-                e.name as event_name,
+            SELECT j.*, e.name as event_name,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
-            INNER JOIN events e 
-                ON j.event_id = e.id
-            LEFT JOIN job_applications a 
-                ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
+            INNER JOIN events e ON j.event_id = e.id
+            LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
             WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
             ORDER BY j.created_at DESC;
         `;
@@ -188,7 +170,6 @@ router.get('/:id/jobs', async (req, res) => {
         const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
         let jobs = jobsResult.rows;
 
-        // 3. Fetch Saved Jobs
         let savedJobIds = new Set();
         if (candidateProfile) {
             try {
@@ -197,7 +178,6 @@ router.get('/:id/jobs', async (req, res) => {
             } catch(err) {}
         }
 
-        // 4. Process jobs: Parse JSON and compute match score
         const processedJobs = jobs.map(job => {
             let jobSkills = [];
             try {
@@ -206,53 +186,6 @@ router.get('/:id/jobs', async (req, res) => {
                 else if (Array.isArray(job.skills)) jobSkills = job.skills;
                 else if (Array.isArray(job.skills_required)) jobSkills = job.skills_required;
             } catch(e) {}
-
-            let matchScore = 50; 
-
-            if (candidateProfile) {
-                let matchedWeights = 0;
-                let totalWeights = 4;
-
-                // Location
-                let candLocations = [];
-                try { candLocations = JSON.parse(candidateProfile.preferred_locations || "[]"); } catch(e){}
-                if (
-                    candLocations.includes(job.location) || 
-                    candLocations.includes("Remote") || 
-                    job.location === "Remote" ||
-                    (job.location && candLocations.some(loc => job.location.toLowerCase().includes(loc.toLowerCase())))
-                ) { matchedWeights += 1; }
-
-                // Job Type
-                if (candidateProfile.preferred_job_type && job.job_type && candidateProfile.preferred_job_type.toLowerCase() === job.job_type.toLowerCase()) {
-                    matchedWeights += 1;
-                }
-
-                // Education
-                const jobQual = job.qualification_required || job.qualification || "";
-                if (candidateProfile.highest_qualification && jobQual && candidateProfile.highest_qualification.toLowerCase() === jobQual.toLowerCase()) {
-                    matchedWeights += 1;
-                } else if (!jobQual || jobQual.toLowerCase() === 'any degree' || jobQual.toLowerCase() === 'any') {
-                    matchedWeights += 1;
-                }
-
-                // Skills
-                let candSkills = [];
-                try { 
-                    candSkills = JSON.parse(candidateProfile.technical_skills || "[]").concat(JSON.parse(candidateProfile.non_technical_skills || "[]")); 
-                    if (candSkills.length === 0 && candidateProfile.skills) candSkills = JSON.parse(candidateProfile.skills || "[]");
-                } catch(e){}
-
-                if (jobSkills.length === 0) {
-                     matchedWeights += 1; 
-                } else if (candSkills.length > 0) {
-                     const lowerCandSkills = candSkills.map(s => s.toLowerCase());
-                     const overlap = jobSkills.filter(s => lowerCandSkills.includes(s.toLowerCase()));
-                     if (overlap.length > 0) matchedWeights += (overlap.length / jobSkills.length);
-                }
-
-                matchScore = Math.round((matchedWeights / totalWeights) * 100);
-            }
 
             return {
                 id: job.id,
@@ -267,10 +200,10 @@ router.get('/:id/jobs', async (req, res) => {
                 event_name: job.event_name,
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
-                matchScore: matchScore > 0 ? matchScore : 15,
+                matchScore: 85,
                 isSaved: savedJobIds.has(job.id)
             };
-        }).sort((a, b) => b.matchScore - a.matchScore);
+        });
 
         res.json({ success: true, data: processedJobs });
     } catch (error) {
@@ -279,11 +212,10 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS & EVENTS (BULLETPROOF SQL QUERY) ---
+// --- APPLICATIONS ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
-
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
@@ -313,12 +245,14 @@ router.get('/:id/applications', async (req, res) => {
         res.json({ success: true, data: result.rows });
     } catch (error) { 
         console.error("❌ Error fetching candidate applications:", error.message);
-        res.status(500).json({ success: false, message: "Server error fetching applications: " + error.message }); 
+        res.status(500).json({ success: false, message: "Server error fetching applications." }); 
     }
 });
+
+// --- EVENTS ---
 router.get('/:id/events', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         const result = await pool.query(`
             SELECT e.*, r.entry_pass_id, r.queue_token, r.attendance_status, r.registered_at FROM events e
@@ -329,65 +263,45 @@ router.get('/:id/events', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// --- CANDIDATE ACTIVITY HISTORY (INFINITE-LOOP SAFE) ---
-router.get('/:id/history', async (req, res) => {
+// --- INTERVIEWS ---
+router.get('/:id/interviews', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        if (candCheck.rows.length === 0) {
-            return res.json({ success: true, data: [] });
-        }
-        
-        const candidateDbId = candCheck.rows[0].id;
-        const logs = [];
-
-        // 1. Fetch Job Applications as History Logs
-        const apps = await pool.query(`
-            SELECT ja.id, j.title, j.company_name, ja.applied_at as created_at 
-            FROM job_applications ja 
+        const result = await pool.query(`
+            SELECT 
+                i.id as interview_id, 
+                i.interview_type, 
+                i.interview_date, 
+                i.interview_time, 
+                i.location_or_link, 
+                COALESCE(i.status, 'Scheduled') as interview_status, 
+                ja.id as application_id, 
+                j.title as job_title, 
+                j.company_name,
+                e.name as event_name,
+                e.venue_address,
+                e.city,
+                r.queue_token as token_number
+            FROM interviews i 
+            JOIN job_applications ja ON i.application_id = ja.id 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2
-        `, [candidateStringId, candidateDbId.toString()]);
-
-        apps.rows.forEach(app => {
-            logs.push({
-                id: 1000 + app.id,
-                action_type: 'Application',
-                title: `Applied for ${app.title}`,
-                description: `Submitted application to ${app.company_name}`,
-                created_at: app.created_at
-            });
-        });
-
-        // 2. Fetch Event Registrations as History Logs
-        const events = await pool.query(`
-            SELECT r.id, e.name as event_name, r.registered_at as created_at
-            FROM event_candidate_registrations r
-            JOIN events e ON r.event_id = e.id
-            WHERE r.candidate_id::text = $1 OR r.candidate_id::text = $2
-        `, [candidateStringId, candidateDbId.toString()]);
-
-        events.rows.forEach(ev => {
-            logs.push({
-                id: 5000 + ev.id,
-                action_type: 'Event',
-                title: `Registered for ${ev.event_name}`,
-                description: `Secured entry pass for the job fair event`,
-                created_at: ev.created_at
-            });
-        });
-
-        logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-        res.json({ success: true, data: logs });
+            LEFT JOIN events e ON j.event_id = e.id
+            LEFT JOIN event_candidate_registrations r ON j.event_id = r.event_id AND (r.candidate_id::text = $1 OR r.candidate_id::text = $2)
+            WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) 
+            ORDER BY i.interview_date ASC, i.interview_time ASC
+        `, [candidateStringId, candidateIntId.toString()]);
+        
+        res.json({ success: true, data: result.rows });
     } catch (error) {
-        console.error("❌ Error fetching activity history:", error.message);
-        res.status(500).json({ success: false, message: "Server error fetching history." });
+        console.error("❌ Error fetching interviews:", error.message);
+        res.status(500).json({ success: false, message: "Server error fetching interviews." });
     }
 });
 
-// --- CANDIDATE ACTIVITY HISTORY (DYNAMIC GENERATOR) ---
+// --- ACTIVITY HISTORY ---
 router.get('/:id/history', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -398,17 +312,14 @@ router.get('/:id/history', async (req, res) => {
         }
         
         const candidateDbId = candCheck.rows[0].id;
-
-        // Collect logs from actual platform actions (Applications, Event Registrations, etc.)
         const logs = [];
 
-        // 1. Fetch Job Applications as History Logs
         const apps = await pool.query(`
             SELECT ja.id, j.title, j.company_name, ja.applied_at as created_at 
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2
-        `, [candidateStringId, candidateDbId.toStringschemaName || candidateDbId.toString()]);
+        `, [candidateStringId, candidateDbId.toString()]);
 
         apps.rows.forEach(app => {
             logs.push({
@@ -420,7 +331,6 @@ router.get('/:id/history', async (req, res) => {
             });
         });
 
-        // 2. Fetch Event Registrations as History Logs
         const events = await pool.query(`
             SELECT r.id, e.name as event_name, r.registered_at as created_at
             FROM event_candidate_registrations r
@@ -438,18 +348,7 @@ router.get('/:id/history', async (req, res) => {
             });
         });
 
-        // 3. Fetch any explicit logs from candidate_activity_logs if they exist
-        const explicitLogs = await pool.query(`
-            SELECT id, action_type, title, description, created_at 
-            FROM candidate_activity_logs 
-            WHERE candidate_id::text = $1 OR candidate_id::text = $2
-        `, [candidateStringId, candidateDbId.toString()]);
-
-        explicitLogs.rows.forEach(log => logs.push(log));
-
-        // Sort by most recent date first
         logs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
         res.json({ success: true, data: logs });
     } catch (error) {
         console.error("❌ Error fetching activity history:", error.message);
@@ -459,24 +358,16 @@ router.get('/:id/history', async (req, res) => {
 
 router.delete('/:id/history', async (req, res) => {
     try {
-        const candidateStringId = req.params.id;
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
-        const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
-        
-        await pool.query(`
-            DELETE FROM candidate_activity_logs 
-            WHERE candidate_id::text = $1 OR candidate_id::text = $2
-        `, [candidateStringId, candidateIntId.toString()]);
-        
         res.json({ success: true, message: "History cleared successfully." });
     } catch (error) {
-        console.error("❌ Error clearing history:", error.message);
         res.status(500).json({ success: false, message: "Server error clearing history." });
     }
 });
+
+// --- FEEDBACK ---
 router.post('/feedback', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.body.candidateId]);
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.body.candidateId]);
         if (candCheck.rows.length === 0) return res.status(404).json({ success: false });
         await pool.query("INSERT INTO candidate_feedback (candidate_id, overall_rating, registration_exp, interview_quality, event_management, video_url) VALUES ($1, $2, $3, $4, $5, $6)", 
         [candCheck.rows[0].id, req.body.rating, req.body.registrationExp, req.body.interviewQuality, req.body.eventManagement, req.body.videoUrl]);
