@@ -329,17 +329,42 @@ router.get('/:id/events', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// --- FETCH CANDIDATE INTERVIEWS & TOKENS ---
 router.get('/:id/interviews', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
+        const candidateStringId = req.params.id;
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
+        
         const result = await pool.query(`
-            SELECT i.id as interview_id, i.interview_type, i.interview_date, i.interview_time, i.location_or_link, i.status as interview_status, ja.id as application_id, j.title as job_title, j.company_name
-            FROM interviews i JOIN job_applications ja ON i.application_id = ja.id JOIN jobs j ON ja.job_id = j.id
-            WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) ORDER BY i.interview_date ASC, i.interview_time ASC
-        `, [req.params.id, candidateIntId.toString()]);
+            SELECT 
+                i.id as interview_id, 
+                i.interview_type, 
+                i.interview_date, 
+                i.interview_time, 
+                i.location_or_link, 
+                COALESCE(i.status, 'Scheduled') as interview_status, 
+                ja.id as application_id, 
+                j.title as job_title, 
+                j.company_name,
+                e.name as event_name,
+                e.venue_address,
+                e.city,
+                r.queue_token as token_number
+            FROM interviews i 
+            JOIN job_applications ja ON i.application_id = ja.id 
+            JOIN jobs j ON ja.job_id = j.id 
+            LEFT JOIN events e ON j.event_id = e.id
+            LEFT JOIN event_candidate_registrations r ON j.event_id = r.event_id AND (r.candidate_id::text = $1 OR r.candidate_id::text = $2)
+            WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) 
+            ORDER BY i.interview_date ASC, i.interview_time ASC
+        `, [candidateStringId, candidateIntId.toString()]);
+        
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) {
+        console.error("❌ Error fetching interviews:", error.message);
+        res.status(500).json({ success: false, message: "Server error fetching interviews." });
+    }
 });
 
 // --- CANDIDATE ACTIVITY HISTORY (DYNAMIC GENERATOR) ---
