@@ -155,6 +155,16 @@ router.put('/events/:id/live', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+router.put('/events/:id/complete', async (req, res) => {
+    try {
+        await pool.query("UPDATE events SET status = 'completed' WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Event marked as completed successfully." });
+    } catch (error) { 
+        console.error("❌ Error completing event:", error);
+        res.status(500).json({ success: false, message: "Server error marking event as completed." }); 
+    }
+});
+
 router.delete('/events/:id', async (req, res) => {
     const { id } = req.params;
     try {
