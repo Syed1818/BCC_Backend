@@ -3,7 +3,7 @@ const router = express.Router();
 const pool = require('../config/db');
 const bcrypt = require('bcrypt');
 
-// --- STALL ALLOCATION & FEEDBACK ---
+// --- STALL ALLOCATION & CANDIDATE FEEDBACK ---
 router.put('/stalls/:id/allocate', async (req, res) => {
     const stallId = req.params.id;
     const { eventId, employerId, stallCode } = req.body;
@@ -23,7 +23,8 @@ router.put('/stalls/:id/allocate', async (req, res) => {
     }
 });
 
-router.get('/feedback', async (req, res) => {
+// RENAMED: GET /api/admin/candidate-feedback - Fetches feedback submitted by candidates
+router.get('/candidate-feedback', async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT cf.id, c.full_name as candidate_name, cf.overall_rating, 
@@ -35,8 +36,8 @@ router.get('/feedback', async (req, res) => {
         `);
         res.json({ success: true, data: result.rows });
     } catch (error) {
-        console.error("❌ Error fetching feedback:", error);
-        res.status(500).json({ success: false, message: "Server error fetching feedback." });
+        console.error("❌ Error fetching candidate feedback:", error);
+        res.status(500).json({ success: false, message: "Server error fetching candidate feedback." });
     }
 });
 
@@ -284,7 +285,6 @@ router.delete('/stalls/:id', async (req, res) => {
     }
 });
 
-// Inside your routes/admin.routes.js
 router.get('/stall-applications', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -457,7 +457,6 @@ router.get('/events/:id/export', async (req, res) => {
         const eventDate = rawDate ? new Date(rawDate).toLocaleDateString('en-IN') : "N/A";
         const eventLocation = ev.city || ev.location || ev.venue_address || "N/A";
 
-        // 1. Fetch Registered Employers and their Stall assignments for this Event
         let employersRows = [];
         try {
             const empRes = await pool.query(`
@@ -478,7 +477,6 @@ router.get('/events/:id/export', async (req, res) => {
             console.error("⚠️ Employer export sub-query warning:", dbErr.message);
         }
 
-        // 2. Fetch Registered Candidates and their attendance status for this Event
         let candidatesRows = [];
         try {
             const candRes = await pool.query(`
@@ -506,7 +504,6 @@ router.get('/events/:id/export', async (req, res) => {
         csvRows.push(`"Date:","${eventDate}","Location:","${eventLocation}"`);
         csvRows.push("");
 
-        // --- EMPLOYERS SECTION ---
         csvRows.push(`"--- REGISTERED EMPLOYERS ---"`);
         csvRows.push(`"Employer DB ID","Company Name","Email","Phone","Registration Status","Payment Status","Allocated Stall"`);
         if (employersRows.length === 0) {
@@ -520,7 +517,6 @@ router.get('/events/:id/export', async (req, res) => {
         csvRows.push("");
         csvRows.push("");
 
-        // --- CANDIDATES SECTION ---
         csvRows.push(`"--- REGISTERED CANDIDATES ---"`);
         csvRows.push(`"Candidate Unique ID","Full Name","Email","Phone","Qualification","District","Attendance Status","Queue Token","Entry Pass ID"`);
         if (candidatesRows.length === 0) {
@@ -540,6 +536,7 @@ router.get('/events/:id/export', async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error generating report: " + error.message });
     }
 });
+
 // --- ADMIN TEAM & IAM MANAGEMENT ---
 router.post('/team', async (req, res) => {
     const { fullName, email, password, role, permissions } = req.body;
@@ -591,7 +588,6 @@ router.delete('/team/:id', async (req, res) => {
 // --- INTERVIEW MANAGEMENT DASHBOARD ---
 router.get('/interviews/dashboard', async (req, res) => {
     try {
-        // 1. Get Live Event IDs
         const liveEventsRes = await pool.query("SELECT id FROM events WHERE status = 'live'");
         const liveEventIds = liveEventsRes.rows.map(e => e.id);
         
@@ -602,7 +598,6 @@ router.get('/interviews/dashboard', async (req, res) => {
             });
         }
 
-        // 2. Get Stalls with Queue Stats
         const stallsQuery = `
             SELECT 
                 s.code as stall_code,
@@ -620,7 +615,6 @@ router.get('/interviews/dashboard', async (req, res) => {
         `;
         const stallsRes = await pool.query(stallsQuery, [liveEventIds]);
 
-        // 3. Overall stats calculations
         let totalWaiting = 0;
         let totalCompleted = 0;
         stallsRes.rows.forEach(s => {
@@ -628,7 +622,6 @@ router.get('/interviews/dashboard', async (req, res) => {
             totalCompleted += parseInt(s.completed || 0);
         });
 
-        // Calculate average wait time based on completed queues (approximate fallback to 12 if none)
         const avgWaitQuery = `
             SELECT COALESCE(EXTRACT(EPOCH FROM AVG(called_at - created_at))/60, 12) as avg_min 
             FROM event_queues 
@@ -637,7 +630,6 @@ router.get('/interviews/dashboard', async (req, res) => {
         const avgWaitRes = await pool.query(avgWaitQuery, [liveEventIds]);
         const avgWaitTime = Math.round(avgWaitRes.rows[0].avg_min);
 
-        // 4. Recent Employer Activity
         const activityQuery = `
             SELECT 
                 emp.company_name,
@@ -674,7 +666,6 @@ router.get('/interviews/dashboard', async (req, res) => {
 // MOBILE QR CHECK-IN FLOW
 // ==========================================
 
-// 1. Request OTP
 router.post('/qr/request-otp', async (req, res) => {
     const { email, phone, role } = req.body;
     try {
@@ -684,7 +675,6 @@ router.post('/qr/request-otp', async (req, res) => {
                 return res.status(404).json({ success: false, message: "No candidate found with these details. Please register first." });
             }
         }
-        // In a real app, send an SMS/Email here. For now, we mock it.
         res.json({ success: true, message: "OTP sent successfully! (Use 1234 for testing)" });
     } catch (error) {
         console.error("OTP Request Error:", error);
@@ -692,11 +682,9 @@ router.post('/qr/request-otp', async (req, res) => {
     }
 });
 
-// 2. Verify OTP & Fetch Details
 router.post('/qr/verify-otp', async (req, res) => {
     const { email, phone, otp, role } = req.body;
     
-    // Mock OTP verification (1234)
     if (otp !== '1234') {
         return res.status(400).json({ success: false, message: "Invalid OTP. Please try again." });
     }
@@ -716,7 +704,6 @@ router.post('/qr/verify-otp', async (req, res) => {
     }
 });
 
-// 3. Mark Final Attendance
 router.post('/qr/mark-attendance', async (req, res) => {
     const { eventId, userId, role } = req.body;
     try {
@@ -727,16 +714,13 @@ router.post('/qr/mark-attendance', async (req, res) => {
             dbUserId = candCheck.rows[0].id;
         }
 
-        // Check if already marked
         const dup = await pool.query("SELECT id FROM event_attendance WHERE event_id = $1 AND user_id = $2 AND user_type = $3", [eventId, dbUserId, role]);
         if (dup.rows.length > 0) {
             return res.json({ success: true, message: "Attendance is already marked for this event!" });
         }
 
-        // Insert Attendance
         await pool.query("INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) VALUES ($1, $2, $3, NOW())", [eventId, dbUserId, role]);
         
-        // Update Registration Status
         if (role === 'candidate') {
             await pool.query("UPDATE event_candidate_registrations SET attendance_status = 'Present' WHERE event_id = $1 AND candidate_id = $2", [eventId, dbUserId]);
         }
@@ -748,6 +732,10 @@ router.post('/qr/mark-attendance', async (req, res) => {
     }
 });
 
+// ==========================================
+// EMPLOYER FEEDBACK MODERATION (FIXED)
+// ==========================================
+
 // GET /api/admin/feedback - List all employer feedback & testimonials
 router.get('/feedback', async (req, res) => {
   try {
@@ -755,7 +743,7 @@ router.get('/feedback', async (req, res) => {
       SELECT 
         ef.id,
         ef.employer_id AS "employerId",
-        COALESCE(u.company_name, u.name, 'Employer #' || ef.employer_id) AS "employerName",
+        COALESCE(u.company_name, 'Employer #' || ef.employer_id) AS "employerName",
         ef.overall_rating AS "rating",
         ef.candidate_quality AS "candidateQuality",
         ef.event_organization AS "eventOrganisation",
@@ -764,10 +752,10 @@ router.get('/feedback', async (req, res) => {
         ef.status,
         TO_CHAR(ef.created_at, 'DD Mon YYYY') AS "createdAt"
       FROM employer_feedback ef
-      LEFT JOIN users u ON u.id = ef.employer_id
+      LEFT JOIN employers u ON u.id = ef.employer_id
       ORDER BY ef.created_at DESC;
     `;
-    const result = await db.query(query);
+    const result = await pool.query(query);
 
     return res.status(200).json({
       success: true,
@@ -789,14 +777,13 @@ router.patch('/feedback/:id/status', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid status value' });
     }
 
-    // Matches your exact schema without trying to update a missing rejection_reason column
     const query = `
       UPDATE employer_feedback
       SET status = $1
       WHERE id = $2
       RETURNING *;
     `;
-    const result = await db.query(query, [status, id]);
+    const result = await pool.query(query, [status, id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Feedback item not found' });
