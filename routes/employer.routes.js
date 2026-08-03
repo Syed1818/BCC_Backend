@@ -62,11 +62,13 @@ router.get('/:employerId/dashboard', async (req, res) => {
         const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
         const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
 
-        // 1. Count ALL active jobs for this employer (since normal jobs are deleted)
+        // 1. Count active jobs BUT filter out any that belong to 'completed' or 'closed' events
         const activeJobs = await pool.query(`
-            SELECT COUNT(*) FROM jobs 
-            WHERE employer_id = $1 
-            AND TRIM(LOWER(status)) IN ('approved', 'active', 'open')
+            SELECT COUNT(j.*) FROM jobs j
+            LEFT JOIN events e ON j.event_id::text = e.id::text
+            WHERE j.employer_id = $1 
+            AND TRIM(LOWER(j.status)) IN ('approved', 'active', 'open')
+            AND (e.id IS NULL OR TRIM(LOWER(e.status)) NOT IN ('completed', 'closed', 'expired'))
         `, [dbEmpId]);
         
         // 2. Count ALL applications
