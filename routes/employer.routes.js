@@ -481,6 +481,7 @@ router.delete('/hrs/:hrId', async (req, res) => {
 // --- LIVE QUEUE & APPLICATIONS (NEW EVENT TOKEN PIPELINE) ---
 // =====================================================================
 
+// UPDATED: Filters out completed/closed events
 router.get('/:employerId/job-options', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -491,7 +492,20 @@ router.get('/:employerId/job-options', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        const result = await pool.query("SELECT id, title, location FROM jobs WHERE employer_id = $1 ORDER BY created_at DESC", [dbEmpId]);
+        // Only select active jobs tied to active/open events
+        const result = await pool.query(`
+            SELECT j.id, j.title, j.location, j.company_name, j.event_id 
+            FROM jobs j
+            JOIN events e ON j.event_id::text = e.id::text
+            WHERE j.employer_id = $1
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != '' 
+            AND j.event_id::text != '0'
+            AND TRIM(LOWER(j.status)) IN ('approved', 'active', 'open')
+            AND TRIM(LOWER(e.status)) NOT IN ('completed', 'closed', 'expired')
+            ORDER BY j.created_at DESC
+        `, [dbEmpId]);
+
         res.json({ success: true, data: result.rows });
     } catch (error) {
         console.error("❌ Error fetching job options:", error);
