@@ -148,7 +148,7 @@ router.get('/:employerId/dashboard', async (req, res) => {
     }
 });
 
-// NEW: COMPREHENSIVE ANALYTICS & EXCEL REPORT ROUTE
+// COMPREHENSIVE ANALYTICS & EXCEL REPORT ROUTE
 router.get('/:employerId/analytics', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -159,7 +159,6 @@ router.get('/:employerId/analytics', async (req, res) => {
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
 
-        // 1. Fetch Complete Pipeline History with specific candidate data for Excel
         const historyRes = await pool.query(`
             SELECT 
                 ja.applied_at as date,
@@ -179,7 +178,6 @@ router.get('/:employerId/analytics', async (req, res) => {
             ORDER BY ja.applied_at DESC
         `, [dbEmpId]);
 
-        // 2. Fetch Monthly Chart Data (Apps vs Hires)
         const monthlyRes = await pool.query(`
             SELECT 
                 to_char(DATE_TRUNC('month', applied_at), 'Mon') as month,
@@ -192,7 +190,6 @@ router.get('/:employerId/analytics', async (req, res) => {
             LIMIT 6
         `, [dbEmpId]);
 
-        // 3. Calculate All-Time KPIs
         const poolSize = historyRes.rows.length;
         const hiredCount = historyRes.rows.filter(r => ['hired', 'offered', 'offer'].includes((r.action_type || '').toLowerCase().trim())).length;
         const convRate = poolSize > 0 ? Math.round((hiredCount / poolSize) * 100) : 0;
@@ -202,7 +199,7 @@ router.get('/:employerId/analytics', async (req, res) => {
             data: {
                 kpis: {
                     conversionRate: convRate,
-                    avgTime: "7 Days", // Base standard, dynamically overwritten on frontend for events
+                    avgTime: "7 Days",
                     totalHires: hiredCount,
                     talentPool: poolSize
                 },
@@ -714,7 +711,9 @@ router.put('/queue/:queueId/status', async (req, res) => {
     }
 });
 
-// POST /api/employer/feedback - Submit new feedback & video testimonial
+// =====================================================================
+// --- EMPLOYER FEEDBACK & VIDEO TESTIMONIAL SUBMISSION ---
+// =====================================================================
 router.post('/feedback', async (req, res) => {
   try {
     const {
@@ -733,7 +732,21 @@ router.post('/feedback', async (req, res) => {
       });
     }
 
-    // Matches your exact columns: overall_rating, candidate_quality, etc.
+    // 1. Resolve employerId to integer ID if email or string is passed
+    let dbEmpId = employerId;
+    if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
+      const lookup = await pool.query(
+        "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)",
+        [employerId]
+      );
+      if (lookup.rows.length > 0) {
+        dbEmpId = lookup.rows[0].id;
+      } else {
+        return res.status(404).json({ success: false, message: "Employer account not found." });
+      }
+    }
+
+    // 2. Insert using exact table column names and pool.query
     const query = `
       INSERT INTO employer_feedback 
       (employer_id, overall_rating, candidate_quality, event_organization, hiring_efficiency, video_url, status)
@@ -742,15 +755,15 @@ router.post('/feedback', async (req, res) => {
     `;
 
     const values = [
-      employerId,
-      rating,
+      dbEmpId,
+      parseInt(rating, 10),
       candidateQuality || null,
       eventOrganization || null,
       hiringEfficiency || null,
       videoUrl || null
     ];
 
-    const result = await db.query(query, values);
+    const result = await pool.query(query, values);
 
     return res.status(201).json({
       success: true,
@@ -761,7 +774,7 @@ router.post('/feedback', async (req, res) => {
     console.error('Error saving feedback:', error);
     return res.status(500).json({
       success: false,
-      message: 'Internal server error while saving feedback'
+      message: error.detail || error.message || 'Internal server error while saving feedback'
     });
   }
 });
