@@ -62,59 +62,48 @@ router.get('/:employerId/dashboard', async (req, res) => {
         const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
         const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
 
-        // 1. Only count ACTIVE EVENT jobs (Catches 'active', 'approved', 'open')
+        // 1. Count ALL active jobs for this employer (since normal jobs are deleted)
         const activeJobs = await pool.query(`
             SELECT COUNT(*) FROM jobs 
             WHERE employer_id = $1 
-            AND LOWER(status) IN ('approved', 'active', 'open') 
-            AND event_id IS NOT NULL 
-            AND event_id::text != '' 
-            AND event_id::text != 'null'
+            AND TRIM(LOWER(status)) IN ('approved', 'active', 'open')
         `, [dbEmpId]);
         
-        // 2. Only count applications tied to EVENT jobs
+        // 2. Count ALL applications
         const totalApps = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.employer_id = $1 
-            AND j.event_id IS NOT NULL 
-            AND j.event_id::text != ''
+            WHERE ja.employer_id = $1
         `, [dbEmpId]);
         
-        // 3. Interviews tied to EVENT jobs
+        // 3. Count Interviews
         const interviews = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             WHERE ja.employer_id = $1 
-            AND j.event_id IS NOT NULL 
-            AND j.event_id::text != '' 
-            AND LOWER(ja.status) IN ('interview', 'interviewed', 'interview scheduled')
+            AND TRIM(LOWER(ja.status)) IN ('interview', 'interviewed', 'interview scheduled')
         `, [dbEmpId]);
         
-        // 4. Offers tied to EVENT jobs
+        // 4. Count Offers
         const offers = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             WHERE ja.employer_id = $1 
-            AND j.event_id IS NOT NULL 
-            AND j.event_id::text != '' 
-            AND LOWER(ja.status) IN ('offered', 'hired')
+            AND TRIM(LOWER(ja.status)) IN ('offered', 'hired')
         `, [dbEmpId]);
 
-        // 5. Funnel tied to EVENT jobs
+        // 5. Funnel Data
         const funnelRes = await pool.query(`
             SELECT ja.status, COUNT(ja.*) as count 
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             WHERE ja.employer_id = $1 
-            AND j.event_id IS NOT NULL 
-            AND j.event_id::text != ''
             GROUP BY ja.status
         `, [dbEmpId]);
         
         const funnel = { Applied: 0, Shortlisted: 0, Interview: 0, Offer: 0, Hired: 0 };
         funnelRes.rows.forEach(row => {
-            const stat = (row.status || '').toLowerCase();
+            const stat = (row.status || '').trim().toLowerCase();
             if (stat === 'applied') funnel.Applied = parseInt(row.count);
             if (stat === 'shortlisted') funnel.Shortlisted = parseInt(row.count);
             if (stat.includes('interview')) funnel.Interview += parseInt(row.count);
@@ -122,7 +111,7 @@ router.get('/:employerId/dashboard', async (req, res) => {
             if (stat === 'hired') funnel.Hired += parseInt(row.count);
         });
 
-        // 6. Recent Applicants tied to EVENT jobs
+        // 6. Recent Applicants
         const recentApps = await pool.query(`
             SELECT ja.id as application_id, ja.status, ja.applied_at, 
                    COALESCE(c.full_name, 'Candidate') as candidate_name, 
@@ -132,8 +121,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id::text = c.id::text
             JOIN jobs j ON ja.job_id = j.id
             WHERE ja.employer_id = $1 
-            AND j.event_id IS NOT NULL 
-            AND j.event_id::text != ''
             ORDER BY ja.applied_at DESC LIMIT 5
         `, [dbEmpId]);
 
@@ -146,7 +133,6 @@ router.get('/:employerId/dashboard', async (req, res) => {
             SELECT to_char(d.day_date, 'Dy') as day, COUNT(ja.id) as applications
             FROM dates d
             LEFT JOIN job_applications ja ON DATE(ja.applied_at) = d.day_date AND ja.employer_id = $1
-            LEFT JOIN jobs j ON ja.job_id = j.id AND j.event_id IS NOT NULL AND j.event_id::text != ''
             GROUP BY d.day_date
             ORDER BY d.day_date ASC;
         `, [dbEmpId]);
