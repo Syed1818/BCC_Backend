@@ -748,4 +748,69 @@ router.post('/qr/mark-attendance', async (req, res) => {
     }
 });
 
+// GET /api/admin/feedback - List all employer feedback & testimonials
+router.get('/feedback', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        ef.id,
+        ef.employer_id AS "employerId",
+        COALESCE(u.company_name, u.name, 'Employer #' || ef.employer_id) AS "employerName",
+        ef.overall_rating AS "rating",
+        ef.candidate_quality AS "candidateQuality",
+        ef.event_organization AS "eventOrganisation",
+        ef.hiring_efficiency AS "hiringEfficiency",
+        ef.video_url AS "videoUrl",
+        ef.status,
+        TO_CHAR(ef.created_at, 'DD Mon YYYY') AS "createdAt"
+      FROM employer_feedback ef
+      LEFT JOIN users u ON u.id = ef.employer_id
+      ORDER BY ef.created_at DESC;
+    `;
+    const result = await db.query(query);
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error fetching feedback for admin:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// PATCH /api/admin/feedback/:id/status - Publish or Reject feedback
+router.patch('/feedback/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['pending', 'published', 'rejected'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status value' });
+    }
+
+    // Matches your exact schema without trying to update a missing rejection_reason column
+    const query = `
+      UPDATE employer_feedback
+      SET status = $1
+      WHERE id = $2
+      RETURNING *;
+    `;
+    const result = await db.query(query, [status, id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Feedback item not found' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Feedback marked as ${status}`,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error updating feedback status:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 module.exports = router;
