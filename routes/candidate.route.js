@@ -125,29 +125,24 @@ router.put('/profile/update', async (req, res) => {
 
 
 // --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
 router.get('/:id/jobs', async (req, res) => {
     try {
-        const candidateStringId = req.params.id;
+        const candidateId = req.params.id;
 
-        // 1. Fetch Candidate Profile & their exact Integer DB ID
+        // 1. Fetch Candidate Profile (to use for matching logic)
         const profileResult = await pool.query(
-            "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
-            [candidateStringId]
+            "SELECT * FROM candidates WHERE unique_id = $1", 
+            [candidateId]
         );
         
         let candidateProfile = null;
-        let candidateIntId = 0; // Fallback to 0 if not found
-        
         if (profileResult.rows.length > 0) {
             candidateProfile = profileResult.rows[0];
-            candidateIntId = candidateProfile.id; // This gets the Integer ID your DB expects
         }
 
         // 2. Fetch all Active Jobs. 
-        // FIXED: Joined "job_applications" instead of "applications"
-        // FIXED: Checking both string ID and integer ID to prevent DB Type crash
-        // FIXED: Handling event name properly if column is named "name" or "event_name"
+        // LEFT JOIN with applications to persist "Applied" state across refreshes.
+        // LEFT JOIN with events to display the Event connection badge.
         const jobsQuery = `
             SELECT 
                 j.*, 
@@ -155,22 +150,21 @@ router.get('/:id/jobs', async (req, res) => {
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
-            LEFT JOIN job_applications a 
-                ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
+            LEFT JOIN applications a 
+                ON j.id = a.job_id AND a.candidate_id = $1
             LEFT JOIN events e 
-                ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
+                ON j.event_id = e.id
             WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
             ORDER BY j.created_at DESC;
         `;
 
-        // Pass both the string ID and integer ID safely
-        const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
+        const jobsResult = await pool.query(jobsQuery, [candidateId]);
         let jobs = jobsResult.rows;
 
         // Fetch saved jobs for bookmark toggles
         let savedJobIds = new Set();
         if (candidateProfile) {
-            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateIntId]);
+            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateProfile.id]);
             savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
         }
 
@@ -249,6 +243,7 @@ router.get('/:id/jobs', async (req, res) => {
                      }
                 }
 
+                // Calculate final percentage and round it
                 matchScore = Math.round((matchedWeights / totalWeights) * 100);
             }
 
@@ -262,7 +257,7 @@ router.get('/:id/jobs', async (req, res) => {
                 experience: job.experience_required || job.experience,
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
-                event_name: job.event_name || job.name, // Try both column names just in case
+                event_name: job.event_name,
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
                 matchScore: matchScore > 0 ? matchScore : 15,
@@ -272,11 +267,11 @@ router.get('/:id/jobs', async (req, res) => {
 
         res.json({ success: true, data: processedJobs });
     } catch (error) {
-        // Detailed console log to catch any exact SQL syntax issues
-        console.error("❌ Failed to fetch matched jobs. Exact SQL Error:", error.message);
+        console.error("❌ Failed to fetch matched jobs:", error);
         res.status(500).json({ success: false, message: "Server error fetching jobs." });
     }
 });
+
 
 // --- APPLICATIONS & EVENTS ---
 router.get('/:id/applications', async (req, res) => {
@@ -288,7 +283,7 @@ router.get('/:id/applications', async (req, res) => {
             SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
                    CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
                    e.name as event_name
-            FROM applications ja 
+            FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
             WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
