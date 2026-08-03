@@ -124,53 +124,56 @@ router.put('/profile/update', async (req, res) => {
 });
 
 
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
+// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (FIXED & CRASH-PROOF) ---
 router.get('/:id/jobs', async (req, res) => {
     try {
-        const candidateId = req.params.id;
+        const candidateStringId = req.params.id;
 
-        // 1. Fetch Candidate Profile (to use for matching logic)
+        // 1. Fetch Candidate Profile (to get Integer ID and logic matching)
         const profileResult = await pool.query(
-            "SELECT * FROM candidates WHERE unique_id = $1", 
-            [candidateId]
+            "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
+            [candidateStringId]
         );
         
         let candidateProfile = null;
+        let candidateIntId = 0; 
+        
         if (profileResult.rows.length > 0) {
             candidateProfile = profileResult.rows[0];
+            candidateIntId = candidateProfile.id; // DB expects an Integer
         }
 
         // 2. Fetch all Active Jobs. 
-        // LEFT JOIN with applications to persist "Applied" state across refreshes.
-        // LEFT JOIN with events to display the Event connection badge.
+        // LEFT JOIN job_applications (correct table name).
+        // LEFT JOIN events (to get event name).
+        // cast candidate_id to ::text to prevent type crashes.
         const jobsQuery = `
             SELECT 
                 j.*, 
-                e.event_name,
+                e.name as event_name,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
-            LEFT JOIN applications a 
-                ON j.id = a.job_id AND a.candidate_id = $1
+            LEFT JOIN job_applications a 
+                ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
             LEFT JOIN events e 
-                ON j.event_id = e.id
+                ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
             WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
             ORDER BY j.created_at DESC;
         `;
 
-        const jobsResult = await pool.query(jobsQuery, [candidateId]);
+        const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
         let jobs = jobsResult.rows;
 
         // Fetch saved jobs for bookmark toggles
         let savedJobIds = new Set();
         if (candidateProfile) {
-            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateProfile.id]);
+            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateIntId]);
             savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
         }
 
         // 3. Process jobs: Parse JSON and compute deterministic match score
         const processedJobs = jobs.map(job => {
-            // Safely parse job skills
             let jobSkills = [];
             try {
                 if (typeof job.skills === 'string') {
@@ -184,14 +187,13 @@ router.get('/:id/jobs', async (req, res) => {
                 }
             } catch(e) {}
 
-            // Deterministic Match Calculation Logic
             let matchScore = 50; // Default base
 
             if (candidateProfile) {
                 let matchedWeights = 0;
                 let totalWeights = 4; // Location, Job Type, Education, Skills
 
-                // Weight 1: Location Match (25%)
+                // Weight 1: Location
                 let candLocations = [];
                 try { candLocations = JSON.parse(candidateProfile.preferred_locations || "[]"); } catch(e){}
                 if (
@@ -203,7 +205,7 @@ router.get('/:id/jobs', async (req, res) => {
                     matchedWeights += 1;
                 }
 
-                // Weight 2: Job Type Match (25%)
+                // Weight 2: Job Type
                 if (
                     candidateProfile.preferred_job_type && 
                     job.job_type && 
@@ -212,7 +214,7 @@ router.get('/:id/jobs', async (req, res) => {
                     matchedWeights += 1;
                 }
 
-                // Weight 3: Education/Qualification Match (25%)
+                // Weight 3: Education
                 const jobQual = job.qualification_required || job.qualification || "";
                 if (
                     candidateProfile.highest_qualification && 
@@ -221,10 +223,10 @@ router.get('/:id/jobs', async (req, res) => {
                 ) {
                     matchedWeights += 1;
                 } else if (!jobQual || jobQual.toLowerCase() === 'any degree' || jobQual.toLowerCase() === 'any') {
-                    matchedWeights += 1; // Give point if job has no strict requirement
+                    matchedWeights += 1;
                 }
 
-                // Weight 4: Skills Match (25%)
+                // Weight 4: Skills
                 let candSkills = [];
                 try { 
                     candSkills = JSON.parse(candidateProfile.technical_skills || "[]").concat(JSON.parse(candidateProfile.non_technical_skills || "[]")); 
@@ -234,7 +236,7 @@ router.get('/:id/jobs', async (req, res) => {
                 } catch(e){}
 
                 if (jobSkills.length === 0) {
-                     matchedWeights += 1; // No specific skills required
+                     matchedWeights += 1; 
                 } else if (candSkills.length > 0) {
                      const lowerCandSkills = candSkills.map(s => s.toLowerCase());
                      const overlap = jobSkills.filter(s => lowerCandSkills.includes(s.toLowerCase()));
@@ -243,7 +245,6 @@ router.get('/:id/jobs', async (req, res) => {
                      }
                 }
 
-                // Calculate final percentage and round it
                 matchScore = Math.round((matchedWeights / totalWeights) * 100);
             }
 
@@ -267,7 +268,7 @@ router.get('/:id/jobs', async (req, res) => {
 
         res.json({ success: true, data: processedJobs });
     } catch (error) {
-        console.error("❌ Failed to fetch matched jobs:", error);
+        console.error("❌ Exact SQL Error Fetching Jobs:", error.message);
         res.status(500).json({ success: false, message: "Server error fetching jobs." });
     }
 });
