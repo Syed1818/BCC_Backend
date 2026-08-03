@@ -6,9 +6,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// =====================================================================
-// --- FILE UPLOAD SETUP FOR EMPLOYER LOGOS (MAX 2MB) ---
-// =====================================================================
 const uploadDir = path.join(__dirname, '../uploads/logos');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -26,7 +23,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 2 * 1024 * 1024 }, // 2 MB limit
+    limits: { fileSize: 2 * 1024 * 1024 }, 
     fileFilter: (req, file, cb) => {
         const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
         if (allowedTypes.includes(file.mimetype)) {
@@ -44,28 +41,20 @@ const upload = multer({
 router.post('/candidate/register', async (req, res) => {
     const data = req.body;
     
-    console.log("\n=============================================");
-    console.log("📥 INCOMING CANDIDATE PAYLOAD RECEIVED:");
-    console.log("=============================================");
-    console.log(JSON.stringify(data, null, 2));
-
     try {
         if (!data.fullName || (!data.email && !data.phone)) {
-            console.error("❌ Registration Blocked: Missing mandatory fields.");
             return res.status(400).json({ success: false, message: "Full Name and Email or Mobile Number are required." });
         }
 
         const cleanEmail = data.email ? data.email.trim().toLowerCase() : null;
         const cleanPhone = data.phone ? data.phone.replace(/\D/g, "").trim() : null;
 
-        // Check for duplicates first
         const userExists = await pool.query(
             "SELECT id FROM candidates WHERE (email IS NOT NULL AND email != '' AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone != '' AND phone = $2)",
             [cleanEmail, cleanPhone]
         );
 
         if (userExists.rows.length > 0) {
-            console.error("❌ Registration Blocked: Email or Phone already exists in DB.");
             return res.status(400).json({ success: false, message: "An account with this Email or Mobile Number is already registered!" });
         }
 
@@ -74,11 +63,9 @@ router.post('/candidate/register', async (req, res) => {
             parsedDob = new Date(data.dob);
         }
 
-        // ENCRYPT PASSWORD
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(data.password, salt);
 
-        // GENERATE UNIQUE ID: BCC-UMP-CAN-9 DIGITS
         const min = 100000000;
         const max = 999999999;
         const random9Digit = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -107,7 +94,7 @@ router.post('/candidate/register', async (req, res) => {
             JSON.stringify(data.currentAddress || {}), JSON.stringify(data.permanentAddress || {}),
             data.qualification || null, data.yearOfPassing || null, data.institution || null, data.schoolName || null,
             data.course || null, data.specialization || null, data.percentage || null,
-            data.languagesFluent, // Handled as JSON string directly from frontend payload
+            data.languagesFluent, 
             JSON.stringify(data.skills || []),
             data.experienceType || 'Fresher', data.experience || null, data.employmentStatus || null,
             data.currentRole || null, data.currentCompany || null, data.resumeFileName || null,
@@ -121,38 +108,18 @@ router.post('/candidate/register', async (req, res) => {
 
         try {
             const result = await pool.query(insertQuery, values);
-            
-            console.log("\n✅ SUCCESS: DATA STORED IN DATABASE!");
-            console.log("---------------------------------------------");
-            console.log(`Database Row Created for ID: ${result.rows[0].unique_id}`);
-            console.log(`Email Saved: ${result.rows[0].email}`);
-            console.log(`Languages Stored: ${result.rows[0].languages_fluent}`);
-            console.log("---------------------------------------------\n");
-            
             return res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
-        
         } catch (dbError) {
-            console.error("⚠️ Full DB Insert failed due to schema mismatch. Using Magic Fallback Insert...", dbError.message);
-            
             const fallbackQuery = `
                 INSERT INTO candidates (unique_id, full_name, email, phone, password, status, account_status, created_at)
                 VALUES ($1, $2, $3, $4, $5, 'Pending', 'Verified', NOW()) RETURNING *;
             `;
             const fallbackValues = [unique_id, data.fullName, cleanEmail, cleanPhone, hashedPassword];
-            
             const fallbackResult = await pool.query(fallbackQuery, fallbackValues);
-            
-            console.log("\n✅ FALLBACK SUCCESS: CORE DATA STORED IN DATABASE!");
-            console.log("---------------------------------------------");
-            console.log(`Row ID: ${fallbackResult.rows[0].unique_id}`);
-            console.log("Only Core Fields (Name, Email, Phone, Pass) saved due to Schema issue.");
-            console.log("---------------------------------------------\n");
-
             return res.status(201).json({ success: true, message: "Candidate registered (via Fallback)", uniqueId: fallbackResult.rows[0].unique_id });
         }
 
     } catch (error) {
-        console.error("❌ Ultimate Catch Server Error:", error);
         res.status(500).json({ success: false, message: "Server error during registration." });
     }
 });
@@ -164,30 +131,24 @@ router.post('/candidate/register', async (req, res) => {
 router.post('/employer/register', upload.single('org_logo'), async (req, res) => {
     const data = req.body;
 
-    console.log("\n=============================================");
-    console.log("🏢 INCOMING EMPLOYER PAYLOAD RECEIVED:");
-    console.log("=============================================");
-    console.log(data);
-
     try {
-        // Point of Contact 1 Email will serve as the Master Login Email
         const emailInput = data.poc1_email || data.email;
         const cleanEmail = emailInput ? emailInput.trim().toLowerCase() : "";
         
         if (!cleanEmail) {
-            return res.status(400).json({ success: false, message: "Point of Contact 1 Email is required." });
+            return res.status(400).json({ success: false, message: "Error: Official Email ID is required." });
         }
 
         const userExists = await pool.query("SELECT * FROM employers WHERE LOWER(email) = $1", [cleanEmail]);
-        if (userExists.rows.length > 0) return res.status(400).json({ success: false, message: "Email already registered." });
+        if (userExists.rows.length > 0) {
+            return res.status(400).json({ success: false, message: "This Official Email ID is already registered to another company." });
+        }
         
         const salt = await bcrypt.genSalt(10);
         const password_hash = await bcrypt.hash(data.password, salt);
 
-        // Handle uploaded file URL (if any)
         const logoUrl = req.file ? `/uploads/logos/${req.file.filename}` : null;
 
-        // HELPER: Safely parse arrays from frontend FormData
         const parseArray = (input) => {
             if (!input) return [];
             if (Array.isArray(input)) return input;
@@ -217,57 +178,66 @@ router.post('/employer/register', upload.single('org_logo'), async (req, res) =>
         `;
 
         const values = [
-            data.company_name, 
+            data.company_name || "", 
             cleanEmail, 
             password_hash, 
-            data.password, // Original DB column preserved based on your schema
-            data.website, 
-            data.org_type, 
-            data.legal_structure, 
-            JSON.stringify(parseArray(data.core_sectors)), // Formatted specifically for Postgres JSONB columns
-            data.pincode, 
-            data.state, 
-            data.district, 
-            data.taluk,
-            data.mla_constituency, 
-            data.mp_constituency, 
-            data.resident_type, 
-            data.local_body_details, 
-            data.locality_area,
-            data.current_address, 
-            data.map_link, 
-            data.org_presence, 
+            data.password, 
+            data.website || "", 
+            data.org_type || "", 
+            data.legal_structure || "", 
+            JSON.stringify(parseArray(data.core_sectors)), 
+            data.pincode || "", 
+            data.state || "", 
+            data.district || "", 
+            data.taluk || "",
+            data.mla_constituency || "", 
+            data.mp_constituency || "", 
+            data.resident_type || "", 
+            data.local_body_details || "", 
+            data.locality_area || "",
+            data.current_address || "", 
+            data.map_link || "", 
+            data.org_presence || "", 
             data.multiple_branches === 'true' || data.multiple_branches === true,
-            data.poc1_title, 
-            data.poc1_name, 
-            data.poc1_designation, 
+            data.poc1_title || "", 
+            data.poc1_name || "", 
+            data.poc1_designation || "", 
             cleanEmail, 
-            data.poc1_phone,
-            data.poc2_title, 
-            data.poc2_name, 
-            data.poc2_designation, 
-            data.poc2_email, 
-            data.poc2_phone,
-            data.employee_strength, 
-            data.hiring_for, 
-            data.hire_pwds, 
-            JSON.stringify(parseArray(data.accepted_disabilities)), // Formatted for Postgres JSONB
+            data.poc1_phone || "",
+            data.poc2_title || "", 
+            data.poc2_name || "", 
+            data.poc2_designation || "", 
+            data.poc2_email || "", 
+            data.poc2_phone || "",
+            data.employee_strength || "", 
+            data.hiring_for || "", 
+            data.hire_pwds || "", 
+            JSON.stringify(parseArray(data.accepted_disabilities)), 
             logoUrl, 
             data.digital_onboarding === 'true' || data.digital_onboarding === true, 
-            data.source_of_discovery, 
-            data.gst_number, 
+            data.source_of_discovery || "", 
+            data.gst_number || "", 
             data.is_gst_verified === 'true' || data.is_gst_verified === true
         ];
 
         const result = await pool.query(query, values);
         
-        console.log("\n✅ SUCCESS: EMPLOYER REGISTERED!");
-        console.log(`Database Row Created for Company: ${data.company_name}`);
-        console.log("---------------------------------------------\n");
+        // GRAB THE GENERATED ID AND SEND IT BACK!
+        const employerId = result.rows[0].id;
 
-        res.status(201).json({ success: true, message: "Employer registration submitted successfully." });
+        res.status(201).json({ 
+            success: true, 
+            message: "Employer registration submitted successfully.",
+            uniqueId: `EMP-${employerId}` // Formats the ID nicely for the UI
+        });
+
     } catch (error) { 
-        console.error("❌ Employer Registration Error:", error);
+        console.error("❌ Employer Registration Database Error:", error);
+        
+        // This will strictly catch missing database fields and push the exact error to the UI
+        if (error.code) { 
+            return res.status(400).json({ success: false, message: `Database Error: ${error.detail || error.message}` }); 
+        }
         res.status(500).json({ success: false, message: "Server error during registration." }); 
     }
 });
@@ -376,7 +346,6 @@ router.post('/login', async (req, res) => {
         }
         return res.status(400).json({ success: false, message: 'Invalid role selected.' });
     } catch (error) {
-        console.error("❌ Login Server Error:", error);
         return res.status(500).json({ success: false, message: "Server Error: " + error.message });
     }
 });
@@ -444,7 +413,6 @@ router.get('/candidate/profile/:id', async (req, res) => {
 
         res.json({ success: true, data: profileData });
     } catch (error) {
-        console.error("❌ Profile Fetch Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching profile." });
     }
 });
@@ -484,7 +452,6 @@ router.put('/candidate/profile/update', async (req, res) => {
         await pool.query(updateQuery, values);
         res.json({ success: true, message: "Profile updated successfully." });
     } catch (error) {
-        console.error("❌ Profile Update Error:", error);
         res.status(500).json({ success: false, message: "Server error updating profile." });
     }
 });
