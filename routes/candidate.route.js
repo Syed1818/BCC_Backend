@@ -279,17 +279,29 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-
-// --- APPLICATIONS & EVENTS ---
+// --- APPLICATIONS & EVENTS (FETCHES ALL EVENT DETAILS) ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
+        // Ensure we pull venue, city, and date from the events table
         const result = await pool.query(`
-            SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
-                   CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
-                   e.name as event_name
+            SELECT 
+                ja.id as application_id, 
+                j.title as job_title, 
+                j.company_name as company, 
+                ja.applied_at, 
+                ja.status, 
+                j.employer_id, 
+                j.id as job_id, 
+                CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
+                COALESCE(e.event_name, e.name) as event_name,
+                e.event_date,
+                e.venue_address,
+                e.city,
+                e.start_time,
+                e.end_time
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id
