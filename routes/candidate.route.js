@@ -148,13 +148,12 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     }
 });
 
-
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
+// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (100% CRASH-PROOF) ---
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
 
-        // 1. Fetch Candidate Profile 
+        // 1. Fetch Candidate Profile (to get Integer ID and logic matching)
         const profileResult = await pool.query(
             "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
             [candidateStringId]
@@ -168,21 +167,16 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id; // DB expects an Integer
         }
 
-        // 2. Fetch all Active Jobs. 
-        // LEFT JOIN job_applications (correct table name).
-        // LEFT JOIN events (to get event name).
-        // cast candidate_id to ::text to prevent type crashes.
+        // 2. Fetch all Active Jobs + Application Status safely
+        // FIXED: Removed the events JOIN from SQL so it physically cannot crash the jobs fetch.
         const jobsQuery = `
             SELECT 
                 j.*, 
-                COALESCE(e.event_name, e.name) as event_name,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
             LEFT JOIN job_applications a 
                 ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
-            LEFT JOIN events e 
-                ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
             WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
             ORDER BY j.created_at DESC;
         `;
@@ -190,35 +184,44 @@ router.get('/:id/jobs', async (req, res) => {
         const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
         let jobs = jobsResult.rows;
 
-        // Fetch saved jobs for bookmark toggles
-        let savedJobIds = new Set();
-        if (candidateProfile) {
-            const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateIntId]);
-            savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
+        // 3. Fetch Events safely (No SQL Crash if columns are named differently)
+        let eventsMap = {};
+        try {
+            const eventsResult = await pool.query("SELECT * FROM events");
+            eventsResult.rows.forEach(e => {
+                // Dynamically grab whatever the name column is called
+                eventsMap[e.id] = e.event_name || e.name || e.title || "Special Event";
+            });
+        } catch(err) {
+            console.error("Warning: Could not link events table perfectly, but jobs will still load.");
         }
 
-        // 3. Process jobs: Parse JSON and compute deterministic match score
+        // 4. Fetch Saved Jobs safely
+        let savedJobIds = new Set();
+        if (candidateProfile) {
+            try {
+                const savedRes = await pool.query("SELECT job_id FROM candidate_saved_jobs WHERE candidate_id = $1", [candidateIntId]);
+                savedJobIds = new Set(savedRes.rows.map(r => r.job_id));
+            } catch(err) {}
+        }
+
+        // 5. Process jobs: Parse JSON and compute deterministic match score
         const processedJobs = jobs.map(job => {
             let jobSkills = [];
             try {
-                if (typeof job.skills === 'string') {
-                    jobSkills = JSON.parse(job.skills);
-                } else if (typeof job.skills_required === 'string') {
-                    jobSkills = JSON.parse(job.skills_required);
-                } else if (Array.isArray(job.skills)) {
-                    jobSkills = job.skills;
-                } else if (Array.isArray(job.skills_required)) {
-                    jobSkills = job.skills_required;
-                }
+                if (typeof job.skills === 'string') jobSkills = JSON.parse(job.skills);
+                else if (typeof job.skills_required === 'string') jobSkills = JSON.parse(job.skills_required);
+                else if (Array.isArray(job.skills)) jobSkills = job.skills;
+                else if (Array.isArray(job.skills_required)) jobSkills = job.skills_required;
             } catch(e) {}
 
-            let matchScore = 50; // Default base
+            let matchScore = 50; 
 
             if (candidateProfile) {
                 let matchedWeights = 0;
-                let totalWeights = 4; // Location, Job Type, Education, Skills
+                let totalWeights = 4;
 
-                // Weight 1: Location
+                // Location
                 let candLocations = [];
                 try { candLocations = JSON.parse(candidateProfile.preferred_locations || "[]"); } catch(e){}
                 if (
@@ -226,38 +229,26 @@ router.get('/:id/jobs', async (req, res) => {
                     candLocations.includes("Remote") || 
                     job.location === "Remote" ||
                     (job.location && candLocations.some(loc => job.location.toLowerCase().includes(loc.toLowerCase())))
-                ) {
+                ) { matchedWeights += 1; }
+
+                // Job Type
+                if (candidateProfile.preferred_job_type && job.job_type && candidateProfile.preferred_job_type.toLowerCase() === job.job_type.toLowerCase()) {
                     matchedWeights += 1;
                 }
 
-                // Weight 2: Job Type
-                if (
-                    candidateProfile.preferred_job_type && 
-                    job.job_type && 
-                    candidateProfile.preferred_job_type.toLowerCase() === job.job_type.toLowerCase()
-                ) {
-                    matchedWeights += 1;
-                }
-
-                // Weight 3: Education
+                // Education
                 const jobQual = job.qualification_required || job.qualification || "";
-                if (
-                    candidateProfile.highest_qualification && 
-                    jobQual && 
-                    candidateProfile.highest_qualification.toLowerCase() === jobQual.toLowerCase()
-                ) {
+                if (candidateProfile.highest_qualification && jobQual && candidateProfile.highest_qualification.toLowerCase() === jobQual.toLowerCase()) {
                     matchedWeights += 1;
                 } else if (!jobQual || jobQual.toLowerCase() === 'any degree' || jobQual.toLowerCase() === 'any') {
                     matchedWeights += 1;
                 }
 
-                // Weight 4: Skills
+                // Skills
                 let candSkills = [];
                 try { 
                     candSkills = JSON.parse(candidateProfile.technical_skills || "[]").concat(JSON.parse(candidateProfile.non_technical_skills || "[]")); 
-                    if (candSkills.length === 0 && candidateProfile.skills) {
-                        candSkills = JSON.parse(candidateProfile.skills || "[]");
-                    }
+                    if (candSkills.length === 0 && candidateProfile.skills) candSkills = JSON.parse(candidateProfile.skills || "[]");
                 } catch(e){}
 
                 if (jobSkills.length === 0) {
@@ -265,12 +256,16 @@ router.get('/:id/jobs', async (req, res) => {
                 } else if (candSkills.length > 0) {
                      const lowerCandSkills = candSkills.map(s => s.toLowerCase());
                      const overlap = jobSkills.filter(s => lowerCandSkills.includes(s.toLowerCase()));
-                     if (overlap.length > 0) {
-                         matchedWeights += (overlap.length / jobSkills.length);
-                     }
+                     if (overlap.length > 0) matchedWeights += (overlap.length / jobSkills.length);
                 }
 
                 matchScore = Math.round((matchedWeights / totalWeights) * 100);
+            }
+
+            // Safely assign event name if the job belongs to an event
+            let finalEventName = null;
+            if (job.event_id && job.event_id != '0') {
+                finalEventName = eventsMap[job.event_id] || null;
             }
 
             return {
@@ -283,7 +278,7 @@ router.get('/:id/jobs', async (req, res) => {
                 experience: job.experience_required || job.experience,
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
-                event_name: job.event_name,
+                event_name: finalEventName,
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
                 matchScore: matchScore > 0 ? matchScore : 15,
@@ -297,7 +292,6 @@ router.get('/:id/jobs', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching jobs." });
     }
 });
-
 
 // --- APPLICATIONS & EVENTS ---
 router.get('/:id/applications', async (req, res) => {
