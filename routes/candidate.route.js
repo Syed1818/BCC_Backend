@@ -123,7 +123,7 @@ router.put('/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// --- NEW WITHDRAW APPLICATION ROUTE ---
+// --- WITHDRAW APPLICATION ROUTE ---
 router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -135,7 +135,7 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
             candidateIntId = profileResult.rows[0].id;
         }
 
-        // Delete the application from the table securely
+        // Delete the application securely
         await pool.query(
             "DELETE FROM job_applications WHERE job_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)",
             [jobId, candidateStringId, candidateIntId.toString()]
@@ -149,12 +149,12 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
 });
 
 
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (100% CRASH-PROOF) ---
+// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (SHOWS ALL JOBS) ---
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
 
-        // 1. Fetch Candidate Profile (to get Integer ID and logic matching)
+        // 1. Fetch Candidate Profile 
         const profileResult = await pool.query(
             "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
             [candidateStringId]
@@ -168,8 +168,7 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id; // DB expects an Integer
         }
 
-        // 2. Fetch all Active Jobs + Application Status safely
-        // FIXED: Removed the events JOIN from SQL so it physically cannot crash the jobs fetch.
+        // 2. Fetch ALL Active Jobs (Event and Non-Event)
         const jobsQuery = `
             SELECT 
                 j.*, 
@@ -185,19 +184,18 @@ router.get('/:id/jobs', async (req, res) => {
         const jobsResult = await pool.query(jobsQuery, [candidateStringId, candidateIntId.toString()]);
         let jobs = jobsResult.rows;
 
-        // 3. Fetch Events safely (No SQL Crash if columns are named differently)
+        // 3. Fetch Events safely to avoid SQL crashes if column name is weird
         let eventsMap = {};
         try {
             const eventsResult = await pool.query("SELECT * FROM events");
             eventsResult.rows.forEach(e => {
-                // Dynamically grab whatever the name column is called
                 eventsMap[e.id] = e.event_name || e.name || e.title || "Special Event";
             });
         } catch(err) {
             console.error("Warning: Could not link events table perfectly, but jobs will still load.");
         }
 
-        // 4. Fetch Saved Jobs safely
+        // 4. Fetch Saved Jobs
         let savedJobIds = new Set();
         if (candidateProfile) {
             try {
@@ -206,7 +204,7 @@ router.get('/:id/jobs', async (req, res) => {
             } catch(err) {}
         }
 
-        // 5. Process jobs: Parse JSON and compute deterministic match score
+        // 5. Process jobs: Parse JSON and compute match score
         const processedJobs = jobs.map(job => {
             let jobSkills = [];
             try {
@@ -263,7 +261,7 @@ router.get('/:id/jobs', async (req, res) => {
                 matchScore = Math.round((matchedWeights / totalWeights) * 100);
             }
 
-            // Safely assign event name if the job belongs to an event
+            // Bind Event Name if it exists
             let finalEventName = null;
             if (job.event_id && job.event_id != '0') {
                 finalEventName = eventsMap[job.event_id] || null;
@@ -301,13 +299,14 @@ router.get('/:id/applications', async (req, res) => {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [req.params.id]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
+        // FIXED: Using LEFT JOIN on events so non-event applications still show up!
         const result = await pool.query(`
             SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
                    CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
                    COALESCE(e.event_name, e.name) as event_name
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            INNER JOIN events e ON j.event_id = e.id
+            LEFT JOIN events e ON j.event_id = e.id
             WHERE ja.candidate_id::text = $1 OR ja.candidate_id::text = $2 
             ORDER BY ja.applied_at DESC
         `, [req.params.id, candidateIntId.toString()]);
