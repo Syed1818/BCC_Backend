@@ -457,12 +457,18 @@ router.get('/events/:id/export', async (req, res) => {
         const eventDate = rawDate ? new Date(rawDate).toLocaleDateString('en-IN') : "N/A";
         const eventLocation = ev.city || ev.location || ev.venue_address || "N/A";
 
-        // Safe query for employers
+        // 1. Fetch Registered Employers and their Stall assignments for this Event
         let employersRows = [];
         try {
             const empRes = await pool.query(`
-                SELECT e.id, e.company_name, e.email, e.phone, e.status, 
-                       (SELECT code FROM venue_stalls WHERE employer_id = e.id AND event_id = $1 LIMIT 1) as stall_code
+                SELECT 
+                    e.id, 
+                    e.company_name, 
+                    e.email, 
+                    e.phone, 
+                    COALESCE(es.status, 'pending') as registration_status,
+                    COALESCE(es.payment_status, 'pending') as payment_status,
+                    (SELECT code FROM venue_stalls WHERE employer_id = e.id AND event_id = $1 LIMIT 1) as stall_code
                 FROM employers e
                 JOIN employer_event_stalls es ON e.id = es.employer_id
                 WHERE es.event_id = $1
@@ -472,14 +478,20 @@ router.get('/events/:id/export', async (req, res) => {
             console.error("⚠️ Employer export sub-query warning:", dbErr.message);
         }
 
-        // Safe query for candidates
+        // 2. Fetch Registered Candidates and their attendance status for this Event
         let candidatesRows = [];
         try {
             const candRes = await pool.query(`
-                SELECT c.unique_id, c.full_name, c.email, c.phone, 
-                       COALESCE(c.highest_qualification, 'N/A') as qualification, 
-                       COALESCE(c.district, 'N/A') as district, 
-                       COALESCE(r.attendance_status, 'Pending') as attendance_status
+                SELECT 
+                    c.unique_id, 
+                    c.full_name, 
+                    c.email, 
+                    c.phone, 
+                    COALESCE(c.highest_qualification, 'N/A') as qualification, 
+                    COALESCE(c.district, 'N/A') as district, 
+                    COALESCE(r.attendance_status, 'Pending') as attendance_status,
+                    r.queue_token,
+                    r.entry_pass_id
                 FROM candidates c
                 JOIN event_candidate_registrations r ON (c.id::text = r.candidate_id::text OR c.unique_id = r.candidate_id::text)
                 WHERE r.event_id = $1
@@ -496,12 +508,12 @@ router.get('/events/:id/export', async (req, res) => {
 
         // --- EMPLOYERS SECTION ---
         csvRows.push(`"--- REGISTERED EMPLOYERS ---"`);
-        csvRows.push(`"Company ID","Company Name","Email","Phone","Status","Allocated Stall"`);
+        csvRows.push(`"Employer DB ID","Company Name","Email","Phone","Registration Status","Payment Status","Allocated Stall"`);
         if (employersRows.length === 0) {
             csvRows.push(`"No employers registered for this event."`);
         } else {
             employersRows.forEach(emp => {
-                csvRows.push(`"${emp.id}","${emp.company_name || ''}","${emp.email || ''}","${emp.phone || ''}","${emp.status || ''}","${emp.stall_code || 'Pending'}"`);
+                csvRows.push(`"${emp.id}","${(emp.company_name || '').replace(/"/g, '""')}","${emp.email || ''}","${emp.phone || ''}","${emp.registration_status}","${emp.payment_status}","${emp.stall_code || 'Pending'}"`);
             });
         }
         
@@ -510,25 +522,24 @@ router.get('/events/:id/export', async (req, res) => {
 
         // --- CANDIDATES SECTION ---
         csvRows.push(`"--- REGISTERED CANDIDATES ---"`);
-        csvRows.push(`"Candidate ID","Full Name","Email","Phone","Qualification","District","Attendance"`);
+        csvRows.push(`"Candidate Unique ID","Full Name","Email","Phone","Qualification","District","Attendance Status","Queue Token","Entry Pass ID"`);
         if (candidatesRows.length === 0) {
             csvRows.push(`"No candidates registered for this event."`);
         } else {
             candidatesRows.forEach(cand => {
-                csvRows.push(`"${cand.unique_id || ''}","${cand.full_name || ''}","${cand.email || ''}","${cand.phone || ''}","${cand.qualification || ''}","${cand.district || ''}","${cand.attendance_status || 'Pending'}"`);
+                csvRows.push(`"${cand.unique_id || ''}","${(cand.full_name || '').replace(/"/g, '""')}","${cand.email || ''}","${cand.phone || ''}","${(cand.qualification || '').replace(/"/g, '""')}","${cand.district || ''}","${cand.attendance_status}","${cand.queue_token || ''}","${cand.entry_pass_id || ''}"`);
             });
         }
 
         const csvString = csvRows.join("\n");
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${eventName.replace(/\s+/g, '_')}_Full_Data.csv"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${eventName.replace(/\s+/g, '_')}_Master_Report.csv"`);
         return res.status(200).send(csvString);
     } catch (error) {
         console.error("❌ Critical Error exporting event report:", error.message);
         return res.status(500).json({ success: false, message: "Server error generating report: " + error.message });
     }
 });
-
 // --- ADMIN TEAM & IAM MANAGEMENT ---
 router.post('/team', async (req, res) => {
     const { fullName, email, password, role, permissions } = req.body;
