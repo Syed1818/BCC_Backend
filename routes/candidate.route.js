@@ -123,13 +123,38 @@ router.put('/profile/update', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// --- NEW WITHDRAW APPLICATION ROUTE ---
+router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
+    try {
+        const candidateStringId = req.params.id;
+        const jobId = req.params.jobId;
 
-// --- GLOBAL JOB BOARD & MATCHING ALGORITHM (FIXED & CRASH-PROOF) ---
+        const profileResult = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        let candidateIntId = 0;
+        if (profileResult.rows.length > 0) {
+            candidateIntId = profileResult.rows[0].id;
+        }
+
+        // Delete the application from the table securely
+        await pool.query(
+            "DELETE FROM job_applications WHERE job_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)",
+            [jobId, candidateStringId, candidateIntId.toString()]
+        );
+
+        res.json({ success: true, message: "Application withdrawn successfully." });
+    } catch (err) {
+        console.error("❌ Withdraw error:", err);
+        res.status(500).json({ success: false, message: "Server error withdrawing application." });
+    }
+});
+
+
+// --- GLOBAL JOB BOARD & MATCHING ALGORITHM ---
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
 
-        // 1. Fetch Candidate Profile (to get Integer ID and logic matching)
+        // 1. Fetch Candidate Profile 
         const profileResult = await pool.query(
             "SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", 
             [candidateStringId]
@@ -144,8 +169,9 @@ router.get('/:id/jobs', async (req, res) => {
         }
 
         // 2. Fetch all Active Jobs. 
-        // LEFT JOIN job_applications
-        // LEFT JOIN events (using COALESCE to handle both e.name and e.event_name just in case)
+        // LEFT JOIN job_applications (correct table name).
+        // LEFT JOIN events (to get event name).
+        // cast candidate_id to ::text to prevent type crashes.
         const jobsQuery = `
             SELECT 
                 j.*, 
@@ -272,30 +298,6 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- NEW WITHDRAW APPLICATION ROUTE ---
-router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
-    try {
-        const candidateStringId = req.params.id;
-        const jobId = req.params.jobId;
-
-        const profileResult = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
-        let candidateIntId = 0;
-        if (profileResult.rows.length > 0) {
-            candidateIntId = profileResult.rows[0].id;
-        }
-
-        // Delete the application from the table securely
-        await pool.query(
-            "DELETE FROM job_applications WHERE job_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)",
-            [jobId, candidateStringId, candidateIntId.toString()]
-        );
-
-        res.json({ success: true, message: "Application withdrawn successfully." });
-    } catch (err) {
-        console.error("❌ Withdraw error:", err);
-        res.status(500).json({ success: false, message: "Server error withdrawing application." });
-    }
-});
 
 // --- APPLICATIONS & EVENTS ---
 router.get('/:id/applications', async (req, res) => {
@@ -306,7 +308,7 @@ router.get('/:id/applications', async (req, res) => {
         const result = await pool.query(`
             SELECT ja.id as application_id, j.title as job_title, j.company_name as company, ja.applied_at, ja.status, j.employer_id, j.id as job_id, 
                    CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
-                   e.name as event_name
+                   COALESCE(e.event_name, e.name) as event_name
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id AND j.event_id IS NOT NULL AND j.event_id::text != '0'
