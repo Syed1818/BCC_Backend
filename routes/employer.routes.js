@@ -62,30 +62,43 @@ router.get('/:employerId/dashboard', async (req, res) => {
         const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
         const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
 
-        // 1. Only count ACTIVE EVENT jobs
-        const activeJobs = await pool.query("SELECT COUNT(*) FROM jobs WHERE employer_id = $1 AND status = 'approved' AND event_id IS NOT NULL", [dbEmpId]);
+        // 1. Only count ACTIVE EVENT jobs (Catches 'active', 'approved', 'open')
+        const activeJobs = await pool.query(`
+            SELECT COUNT(*) FROM jobs 
+            WHERE employer_id = $1 
+            AND LOWER(status) IN ('approved', 'active', 'open') 
+            AND event_id IS NOT NULL 
+            AND event_id::text != '' 
+            AND event_id::text != 'null'
+        `, [dbEmpId]);
         
         // 2. Only count applications tied to EVENT jobs
         const totalApps = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL
+            WHERE ja.employer_id = $1 
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != ''
         `, [dbEmpId]);
         
         // 3. Interviews tied to EVENT jobs
         const interviews = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
-            AND ja.status IN ('Interview', 'Interviewed', 'Interview Scheduled')
+            WHERE ja.employer_id = $1 
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != '' 
+            AND LOWER(ja.status) IN ('interview', 'interviewed', 'interview scheduled')
         `, [dbEmpId]);
         
         // 4. Offers tied to EVENT jobs
         const offers = await pool.query(`
             SELECT COUNT(ja.*) FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
-            AND ja.status IN ('Offered', 'Hired')
+            WHERE ja.employer_id = $1 
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != '' 
+            AND LOWER(ja.status) IN ('offered', 'hired')
         `, [dbEmpId]);
 
         // 5. Funnel tied to EVENT jobs
@@ -93,17 +106,20 @@ router.get('/:employerId/dashboard', async (req, res) => {
             SELECT ja.status, COUNT(ja.*) as count 
             FROM job_applications ja 
             JOIN jobs j ON ja.job_id = j.id 
-            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            WHERE ja.employer_id = $1 
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != ''
             GROUP BY ja.status
         `, [dbEmpId]);
         
         const funnel = { Applied: 0, Shortlisted: 0, Interview: 0, Offer: 0, Hired: 0 };
         funnelRes.rows.forEach(row => {
-            if (row.status === 'Applied') funnel.Applied = parseInt(row.count);
-            if (row.status === 'Shortlisted') funnel.Shortlisted = parseInt(row.count);
-            if (row.status.includes('Interview')) funnel.Interview += parseInt(row.count);
-            if (row.status === 'Offered' || row.status === 'Offer') funnel.Offer += parseInt(row.count);
-            if (row.status === 'Hired') funnel.Hired += parseInt(row.count);
+            const stat = (row.status || '').toLowerCase();
+            if (stat === 'applied') funnel.Applied = parseInt(row.count);
+            if (stat === 'shortlisted') funnel.Shortlisted = parseInt(row.count);
+            if (stat.includes('interview')) funnel.Interview += parseInt(row.count);
+            if (stat === 'offered' || stat === 'offer') funnel.Offer += parseInt(row.count);
+            if (stat === 'hired') funnel.Hired += parseInt(row.count);
         });
 
         // 6. Recent Applicants tied to EVENT jobs
@@ -113,9 +129,11 @@ router.get('/:employerId/dashboard', async (req, res) => {
                    ja.candidate_id, j.title as job_title, 
                    FLOOR(RANDOM() * (98 - 75 + 1) + 75) as match_score
             FROM job_applications ja 
-            LEFT JOIN candidates c ON ja.candidate_id = c.unique_id 
+            LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id::text = c.id::text
             JOIN jobs j ON ja.job_id = j.id
-            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            WHERE ja.employer_id = $1 
+            AND j.event_id IS NOT NULL 
+            AND j.event_id::text != ''
             ORDER BY ja.applied_at DESC LIMIT 5
         `, [dbEmpId]);
 
@@ -128,7 +146,7 @@ router.get('/:employerId/dashboard', async (req, res) => {
             SELECT to_char(d.day_date, 'Dy') as day, COUNT(ja.id) as applications
             FROM dates d
             LEFT JOIN job_applications ja ON DATE(ja.applied_at) = d.day_date AND ja.employer_id = $1
-            LEFT JOIN jobs j ON ja.job_id = j.id AND j.event_id IS NOT NULL
+            LEFT JOIN jobs j ON ja.job_id = j.id AND j.event_id IS NOT NULL AND j.event_id::text != ''
             GROUP BY d.day_date
             ORDER BY d.day_date ASC;
         `, [dbEmpId]);
@@ -136,10 +154,10 @@ router.get('/:employerId/dashboard', async (req, res) => {
         res.json({ success: true, data: {
             profile,
             kpis: { 
-                activeJobs: parseInt(activeJobs.rows[0].count), 
-                applications: parseInt(totalApps.rows[0].count), 
-                interviews: parseInt(interviews.rows[0].count), 
-                offersMade: parseInt(offers.rows[0].count) 
+                activeJobs: parseInt(activeJobs.rows[0].count) || 0, 
+                applications: parseInt(totalApps.rows[0].count) || 0, 
+                interviews: parseInt(interviews.rows[0].count) || 0, 
+                offersMade: parseInt(offers.rows[0].count) || 0
             },
             funnelData: funnel, 
             recentApplicants: recentApps.rows,
@@ -150,6 +168,7 @@ router.get('/:employerId/dashboard', async (req, res) => {
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
+
 // =====================================================================
 // --- COMPREHENSIVE PROFILE FETCH & UPDATE ---
 // =====================================================================
