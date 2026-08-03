@@ -144,13 +144,12 @@ router.get('/:id/jobs', async (req, res) => {
         }
 
         // 2. Fetch all Active Jobs. 
-        // LEFT JOIN job_applications (correct table name).
-        // LEFT JOIN events (to get event name).
-        // cast candidate_id to ::text to prevent type crashes.
+        // LEFT JOIN job_applications
+        // LEFT JOIN events (using COALESCE to handle both e.name and e.event_name just in case)
         const jobsQuery = `
             SELECT 
                 j.*, 
-                e.name as event_name,
+                COALESCE(e.event_name, e.name) as event_name,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
@@ -273,6 +272,30 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
+// --- NEW WITHDRAW APPLICATION ROUTE ---
+router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
+    try {
+        const candidateStringId = req.params.id;
+        const jobId = req.params.jobId;
+
+        const profileResult = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        let candidateIntId = 0;
+        if (profileResult.rows.length > 0) {
+            candidateIntId = profileResult.rows[0].id;
+        }
+
+        // Delete the application from the table securely
+        await pool.query(
+            "DELETE FROM job_applications WHERE job_id = $1 AND (candidate_id::text = $2 OR candidate_id::text = $3)",
+            [jobId, candidateStringId, candidateIntId.toString()]
+        );
+
+        res.json({ success: true, message: "Application withdrawn successfully." });
+    } catch (err) {
+        console.error("❌ Withdraw error:", err);
+        res.status(500).json({ success: false, message: "Server error withdrawing application." });
+    }
+});
 
 // --- APPLICATIONS & EVENTS ---
 router.get('/:id/applications', async (req, res) => {
