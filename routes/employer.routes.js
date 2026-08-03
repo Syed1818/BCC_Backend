@@ -58,12 +58,45 @@ router.get('/:employerId/dashboard', async (req, res) => {
             }
         }
 
-        const activeJobs = await pool.query("SELECT COUNT(*) FROM jobs WHERE employer_id = $1 AND status = 'approved'", [dbEmpId]);
-        const totalApps = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1", [dbEmpId]);
-        const interviews = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Interview', 'Interviewed', 'Interview Scheduled')", [dbEmpId]);
-        const offers = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id = $1 AND status IN ('Offered', 'Hired')", [dbEmpId]);
+        // Fetch Live Profile for Header
+        const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
+        const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
 
-        const funnelRes = await pool.query("SELECT status, COUNT(*) as count FROM job_applications WHERE employer_id = $1 GROUP BY status", [dbEmpId]);
+        // 1. Only count ACTIVE EVENT jobs
+        const activeJobs = await pool.query("SELECT COUNT(*) FROM jobs WHERE employer_id = $1 AND status = 'approved' AND event_id IS NOT NULL", [dbEmpId]);
+        
+        // 2. Only count applications tied to EVENT jobs
+        const totalApps = await pool.query(`
+            SELECT COUNT(ja.*) FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL
+        `, [dbEmpId]);
+        
+        // 3. Interviews tied to EVENT jobs
+        const interviews = await pool.query(`
+            SELECT COUNT(ja.*) FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            AND ja.status IN ('Interview', 'Interviewed', 'Interview Scheduled')
+        `, [dbEmpId]);
+        
+        // 4. Offers tied to EVENT jobs
+        const offers = await pool.query(`
+            SELECT COUNT(ja.*) FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            AND ja.status IN ('Offered', 'Hired')
+        `, [dbEmpId]);
+
+        // 5. Funnel tied to EVENT jobs
+        const funnelRes = await pool.query(`
+            SELECT ja.status, COUNT(ja.*) as count 
+            FROM job_applications ja 
+            JOIN jobs j ON ja.job_id = j.id 
+            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            GROUP BY ja.status
+        `, [dbEmpId]);
+        
         const funnel = { Applied: 0, Shortlisted: 0, Interview: 0, Offer: 0, Hired: 0 };
         funnelRes.rows.forEach(row => {
             if (row.status === 'Applied') funnel.Applied = parseInt(row.count);
@@ -73,76 +106,50 @@ router.get('/:employerId/dashboard', async (req, res) => {
             if (row.status === 'Hired') funnel.Hired += parseInt(row.count);
         });
 
+        // 6. Recent Applicants tied to EVENT jobs
         const recentApps = await pool.query(`
-            SELECT ja.id as application_id, ja.status, ja.applied_at, COALESCE(c.full_name, 'Candidate') as candidate_name, ja.candidate_id, j.title as job_title, FLOOR(RANDOM() * (98 - 75 + 1) + 75) as match_score
-            FROM job_applications ja LEFT JOIN candidates c ON ja.candidate_id = c.unique_id JOIN jobs j ON ja.job_id = j.id
-            WHERE ja.employer_id = $1 ORDER BY ja.applied_at DESC LIMIT 5
+            SELECT ja.id as application_id, ja.status, ja.applied_at, 
+                   COALESCE(c.full_name, 'Candidate') as candidate_name, 
+                   ja.candidate_id, j.title as job_title, 
+                   FLOOR(RANDOM() * (98 - 75 + 1) + 75) as match_score
+            FROM job_applications ja 
+            LEFT JOIN candidates c ON ja.candidate_id = c.unique_id 
+            JOIN jobs j ON ja.job_id = j.id
+            WHERE ja.employer_id = $1 AND j.event_id IS NOT NULL 
+            ORDER BY ja.applied_at DESC LIMIT 5
+        `, [dbEmpId]);
+
+        // 7. Last 7 Days Application Trend for Chart
+        const trendRes = await pool.query(`
+            WITH dates AS (
+                SELECT current_date - i AS day_date
+                FROM generate_series(0, 6) i
+            )
+            SELECT to_char(d.day_date, 'Dy') as day, COUNT(ja.id) as applications
+            FROM dates d
+            LEFT JOIN job_applications ja ON DATE(ja.applied_at) = d.day_date AND ja.employer_id = $1
+            LEFT JOIN jobs j ON ja.job_id = j.id AND j.event_id IS NOT NULL
+            GROUP BY d.day_date
+            ORDER BY d.day_date ASC;
         `, [dbEmpId]);
 
         res.json({ success: true, data: {
-            kpis: { activeJobs: parseInt(activeJobs.rows[0].count), applications: parseInt(totalApps.rows[0].count), interviews: parseInt(interviews.rows[0].count), offersMade: parseInt(offers.rows[0].count) },
-            funnelData: funnel, recentApplicants: recentApps.rows
+            profile,
+            kpis: { 
+                activeJobs: parseInt(activeJobs.rows[0].count), 
+                applications: parseInt(totalApps.rows[0].count), 
+                interviews: parseInt(interviews.rows[0].count), 
+                offersMade: parseInt(offers.rows[0].count) 
+            },
+            funnelData: funnel, 
+            recentApplicants: recentApps.rows,
+            chartData: trendRes.rows
         }});
     } catch (error) { 
         console.error("Dashboard Error:", error);
         res.status(500).json({ success: false, message: error.message }); 
     }
 });
-
-router.get('/:employerId/analytics', async (req, res) => {
-    const { employerId } = req.params;
-    try {
-        let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
-            if (lookup.rows.length > 0) {
-                dbEmpId = lookup.rows[0].id;
-            } else {
-                return res.status(404).json({ success: false, message: "Employer analytics not found." });
-            }
-        }
-
-        const appsRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1::text", [dbEmpId]);
-        const hiresRes = await pool.query("SELECT COUNT(*) FROM job_applications WHERE employer_id::text = $1::text AND status = 'Hired'", [dbEmpId]);
-        const totalApps = parseInt(appsRes.rows[0].count) || 0;
-        const totalHires = parseInt(hiresRes.rows[0].count) || 0;
-
-        const historyRes = await pool.query(`
-            SELECT ja.applied_at as date, COALESCE(c.full_name, 'Candidate') as candidate_name, 
-                   j.title as job_title, ja.status as action_type, j.event_id, e.name as event_name
-            FROM job_applications ja 
-            LEFT JOIN candidates c ON ja.candidate_id::text = c.unique_id OR ja.candidate_id::text = c.id::text
-            JOIN jobs j ON ja.job_id::text = j.id::text 
-            LEFT JOIN events e ON j.event_id::text = e.id::text
-            WHERE ja.employer_id::text = $1::text 
-            ORDER BY ja.applied_at DESC
-        `, [dbEmpId]);
-
-        const monthlyData = [
-            { month: "Jan", apps: Math.floor(totalApps * 0.2), hires: Math.floor(totalHires * 0.2) },
-            { month: "Feb", apps: Math.floor(totalApps * 0.3), hires: Math.floor(totalHires * 0.3) },
-            { month: "Mar", apps: Math.floor(totalApps * 0.5), hires: totalHires - Math.floor(totalHires * 0.5) },
-        ];
-
-        res.json({
-            success: true,
-            data: {
-                kpis: { 
-                    conversionRate: totalApps > 0 ? ((totalHires / totalApps) * 100).toFixed(1) : "0.0", 
-                    avgTime: totalHires > 0 ? "6 days" : "N/A", 
-                    totalHires, 
-                    talentPool: totalApps 
-                },
-                monthlyData,
-                history: historyRes.rows
-            }
-        });
-    } catch (error) {
-        console.error("❌ Analytics Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching analytics: " + error.message });
-    }
-});
-
 // =====================================================================
 // --- COMPREHENSIVE PROFILE FETCH & UPDATE ---
 // =====================================================================
