@@ -454,42 +454,59 @@ router.get('/events/:id/export', async (req, res) => {
         const ev = eventResult.rows[0];
         const eventName = ev.name || ev.event_name || "Udyoga Mela";
         const rawDate = ev.event_date || ev.date || ev.created_at;
-        const eventDate = rawDate ? new Date(rawDate).toLocaleDateString('en-IN') : "28/07/2026";
-        const eventLocation = ev.city || ev.location || ev.venue_address || "Hubballi";
+        const eventDate = rawDate ? new Date(rawDate).toLocaleDateString('en-IN') : "N/A";
+        const eventLocation = ev.city || ev.location || ev.venue_address || "N/A";
 
-        const jobsResult = await pool.query(
-            `SELECT j.title as job_title, 
-                    COALESCE(e.company_name, 'Direct Employer') as company_name,
-                    COUNT(app.id) as total_applications,
-                    SUM(CASE WHEN app.status = 'shortlisted' THEN 1 ELSE 0 END) as shortlisted,
-                    SUM(CASE WHEN app.status = 'interviewed' THEN 1 ELSE 0 END) as interviewed,
-                    SUM(CASE WHEN app.status = 'hired' THEN 1 ELSE 0 END) as total_hired
-             FROM jobs j
-             LEFT JOIN employers e ON j.employer_id = e.id
-             LEFT JOIN job_applications app ON j.id = app.job_id
-             WHERE j.event_id = $1
-             GROUP BY j.id, j.title, e.company_name`,
-            [eventId]
-        );
+        // Fetch Registered Employers for this Event
+        const employersResult = await pool.query(`
+            SELECT e.id, e.company_name, e.email, e.phone, e.status, s.code as stall_code
+            FROM employers e
+            JOIN employer_event_stalls es ON e.id = es.employer_id
+            LEFT JOIN venue_stalls s ON s.employer_id = e.id AND s.event_id = $1
+            WHERE es.event_id = $1
+        `, [eventId]);
+
+        // Fetch Registered Candidates for this Event
+        const candidatesResult = await pool.query(`
+            SELECT c.unique_id, c.full_name, c.email, c.phone, c.highest_qualification, c.district, r.attendance_status
+            FROM candidates c
+            JOIN event_candidate_registrations r ON (c.id::text = r.candidate_id::text OR c.unique_id = r.candidate_id::text)
+            WHERE r.event_id = $1
+        `, [eventId]);
 
         let csvRows = [];
         csvRows.push(`"Event Report:","${eventName}"`);
         csvRows.push(`"Date:","${eventDate}","Location:","${eventLocation}"`);
         csvRows.push("");
-        csvRows.push(`"Company Name","Job Title","Total Applications","Shortlisted","Interviewed","Total Hired","Queue Tokens"`);
 
-        if (jobsResult.rows.length === 0) {
-            csvRows.push(`"Bosch Ltd","CNC Operator",12,5,2,1,18`);
-            csvRows.push(`"Infosys","Software Developer",24,10,4,2,24`);
+        // --- EMPLOYERS SECTION ---
+        csvRows.push(`"--- REGISTERED EMPLOYERS ---"`);
+        csvRows.push(`"Company ID","Company Name","Email","Phone","Status","Allocated Stall"`);
+        if (employersResult.rows.length === 0) {
+            csvRows.push(`"No employers registered for this event."`);
         } else {
-            jobsResult.rows.forEach(row => {
-                csvRows.push(`"${row.company_name}","${row.job_title}",${row.total_applications},${row.shortlisted},${row.interviewed},${row.total_hired},0`);
+            employersResult.rows.forEach(emp => {
+                csvRows.push(`"${emp.id}","${emp.company_name || ''}","${emp.email || ''}","${emp.phone || ''}","${emp.status || ''}","${emp.stall_code || 'Pending'}"`);
+            });
+        }
+        
+        csvRows.push("");
+        csvRows.push("");
+
+        // --- CANDIDATES SECTION ---
+        csvRows.push(`"--- REGISTERED CANDIDATES ---"`);
+        csvRows.push(`"Candidate ID","Full Name","Email","Phone","Qualification","District","Attendance"`);
+        if (candidatesResult.rows.length === 0) {
+            csvRows.push(`"No candidates registered for this event."`);
+        } else {
+            candidatesResult.rows.forEach(cand => {
+                csvRows.push(`"${cand.unique_id || ''}","${cand.full_name || ''}","${cand.email || ''}","${cand.phone || ''}","${cand.highest_qualification || ''}","${cand.district || ''}","${cand.attendance_status || 'Pending'}"`);
             });
         }
 
         const csvString = csvRows.join("\n");
         res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${eventName.replace(/\s+/g, '_')}_Report.csv"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${eventName.replace(/\s+/g, '_')}_Full_Data.csv"`);
         return res.status(200).send(csvString);
     } catch (error) {
         console.error("❌ Error exporting event report:", error);
