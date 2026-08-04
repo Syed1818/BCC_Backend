@@ -234,6 +234,69 @@ router.delete('/materials/:id', async (req, res) => {
     }
 });
 
+// 13. Fetch Captured Leads
+router.get('/:exhibitorId/leads', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT el.*, e.name as event_name 
+            FROM exhibitor_leads el
+            LEFT JOIN events e ON el.event_id = e.id
+            WHERE el.exhibitor_id = $1 
+            ORDER BY el.scanned_at DESC
+        `, [req.params.exhibitorId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error fetching leads." });
+    }
+});
+
+// 14. Capture New Lead (QR Scan Simulator)
+router.post('/:exhibitorId/leads/scan', async (req, res) => {
+    const { exhibitorId } = req.params;
+    const { event_id, candidate_id } = req.body;
+    
+    try {
+        // Mocking candidate data retrieval based on the scanned ID
+        // In production, this would SELECT from your candidates table
+        const mockCandidateName = "Scanned Candidate";
+        const mockCandidateEmail = "candidate@example.com";
+        const mockCandidatePhone = "9876543210";
+        const mockSkills = "Java, React, SQL";
+
+        const result = await pool.query(`
+            INSERT INTO exhibitor_leads (exhibitor_id, event_id, candidate_id, candidate_name, candidate_email, candidate_phone, candidate_skills, lead_status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'Warm')
+            ON CONFLICT (exhibitor_id, event_id, candidate_id) DO NOTHING
+            RETURNING *;
+        `, [exhibitorId, event_id, candidate_id, mockCandidateName, mockCandidateEmail, mockCandidatePhone, mockSkills]);
+        
+        if (result.rows.length === 0) {
+            return res.status(400).json({ success: false, message: "Lead already captured for this event." });
+        }
+        
+        res.json({ success: true, message: "Lead captured successfully!", data: result.rows[0] });
+    } catch (error) {
+        console.error("Error capturing lead:", error);
+        res.status(500).json({ success: false, message: "Server error capturing lead." });
+    }
+});
+
+// 15. Update Lead Status and Notes
+router.put('/leads/:leadId', async (req, res) => {
+    const { lead_status, notes } = req.body;
+    try {
+        const result = await pool.query(`
+            UPDATE exhibitor_leads 
+            SET lead_status = $1, notes = $2 
+            WHERE id = $3 RETURNING *
+        `, [lead_status, notes, req.params.leadId]);
+        
+        res.json({ success: true, message: "Lead updated successfully", data: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error updating lead." });
+    }
+});
+
 
 
 
