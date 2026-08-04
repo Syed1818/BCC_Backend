@@ -333,7 +333,6 @@ router.put(['/stall-applications/:id/reject', '/stall_applications/:id/reject'],
 // =====================================================================
 router.get('/jobs', async (req, res) => {
     try {
-        // Updated to JOIN events table so we get event names, event statuses, and vacancies
         const result = await pool.query(`
             SELECT 
                 j.id, j.title, j.company_name, j.job_type, j.location, j.status, 
@@ -389,19 +388,14 @@ router.put('/jobs/:jobId/status', async (req, res) => {
 // =====================================================================
 router.get('/employers', async (req, res) => {
     try {
-        // Fetch all columns directly to avoid column-name mismatches in SQL
         const result = await pool.query(`SELECT * FROM employers ORDER BY id DESC`);
         
-        // Safely fetch PoC data if the table exists
         let pocData = [];
         try {
             const pocsResult = await pool.query("SELECT * FROM employer_pocs");
             pocData = pocsResult.rows;
-        } catch (err) {
-            // Table doesn't exist, ignore
-        }
+        } catch (err) {}
 
-        // Safely fetch job counts
         let jobCounts = {};
         try {
             const jobsResult = await pool.query(`
@@ -413,20 +407,16 @@ router.get('/employers', async (req, res) => {
             jobsResult.rows.forEach(r => {
                 jobCounts[r.employer_id] = parseInt(r.count) || 0;
             });
-        } catch (err) {
-            // Ignore if jobs table count fails
-        }
+        } catch (err) {}
 
         const formattedData = result.rows.map(e => {
             const empId = e.id;
-            // Flexible fallbacks for whatever column names exist in your DB schema
             const empEmail = e.email || e.contact_email || e.company_email || 'N/A';
             const empPhone = e.phone || e.mobile || e.contact_number || e.phone_number || 'N/A';
             const empName = e.company_name || e.name || 'Company';
             const rawGst = e.gst_cin || e.gst || e.gst_status || 'Pending';
             const empGst = rawGst !== 'Pending' && rawGst !== '' ? 'Verified' : 'Pending';
             
-            // Standardize status for frontend compatibility
             let empStatus = e.status || 'pending';
             if (empStatus === 'blacklisted') empStatus = 'deleted';
 
@@ -460,7 +450,7 @@ router.put('/employers/:dbId/status', async (req, res) => {
     const { status } = req.body;
     try {
         let dbStatus = status;
-        if (status === 'deleted') dbStatus = 'blacklisted'; // standard DB convention mapping
+        if (status === 'deleted') dbStatus = 'blacklisted';
         
         const result = await pool.query(
             `UPDATE employers SET status = $1 WHERE id = $2 RETURNING id, company_name, status`,
@@ -494,7 +484,7 @@ router.get('/candidates', async (req, res) => {
 
 router.put('/candidates/:id/block', async (req, res) => {
     const { id } = req.params;
-    const { action } = req.body; // Expects 'Block' or 'Unblock'
+    const { action } = req.body;
     
     try {
         const newStatus = action === 'Block' ? 'Blocked' : 'Active';
@@ -585,9 +575,7 @@ router.get('/events/:id/export', async (req, res) => {
                 WHERE es.event_id = $1
             `, [eventId]);
             employersRows = empRes.rows;
-        } catch (dbErr) {
-            console.error("⚠️ Employer export sub-query warning:", dbErr.message);
-        }
+        } catch (dbErr) {}
 
         let candidatesRows = [];
         try {
@@ -607,9 +595,7 @@ router.get('/events/:id/export', async (req, res) => {
                 WHERE r.event_id = $1
             `, [eventId]);
             candidatesRows = candRes.rows;
-        } catch (dbErr) {
-            console.error("⚠️ Candidate export sub-query warning:", dbErr.message);
-        }
+        } catch (dbErr) {}
 
         let csvRows = [];
         csvRows.push(`"Event Report:","${eventName}"`);
@@ -649,9 +635,9 @@ router.get('/events/:id/export', async (req, res) => {
     }
 });
 
-// ==========================================
-// EVENT CANDIDATES REPORT (NEW)
-// ==========================================
+// =====================================================================
+// --- EVENT CANDIDATES REPORT ---
+// =====================================================================
 router.get('/events/:eventId/candidates-report', async (req, res) => {
     const { eventId } = req.params;
     try {
@@ -682,11 +668,74 @@ router.get('/events/:eventId/candidates-report', async (req, res) => {
     }
 });
 
-// ==========================================
-// EMPLOYER FEEDBACK MODERATION (FIXED)
-// ==========================================
+// =====================================================================
+// --- STALL-WISE INTERVIEW CONTROL & LOGS REPORT (NEW) ---
+// =====================================================================
+router.get('/events/:eventId/interviews-report', async (req, res) => {
+    const { eventId } = req.params;
+    try {
+        // 1. Stall-wise aggregated interview statistics
+        const stallQuery = `
+            SELECT 
+                s.id as stall_id,
+                s.code as stall_code,
+                e.id as employer_id,
+                e.company_name,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%waiting%' OR ja.status ILIKE '%pending%') as waiting_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%shortlist%') as shortlisted_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%interview%') as interviewed_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%hired%' OR ja.status ILIKE '%offer%') as hired_count,
+                COUNT(DISTINCT ja.id) FILTER (WHERE ja.status ILIKE '%reject%') as rejected_count,
+                COUNT(DISTINCT ja.id) as total_applications
+            FROM venue_stalls s
+            JOIN employers e ON s.employer_id = e.id
+            LEFT JOIN jobs j ON j.employer_id = e.id AND j.event_id::text = s.event_id::text
+            LEFT JOIN job_applications ja ON ja.job_id = j.id
+            WHERE s.event_id::text = $1
+            GROUP BY s.id, s.code, e.id, e.company_name
+            ORDER BY s.code ASC
+        `;
+        const stallRes = await pool.query(stallQuery, [eventId]);
 
-// GET /api/admin/feedback - List all employer feedback & testimonials
+        // 2. Detailed candidate interview log list
+        const logsQuery = `
+            SELECT 
+                ja.id as application_id,
+                c.unique_id as candidate_id,
+                c.full_name as candidate_name,
+                c.email as candidate_email,
+                c.phone as candidate_phone,
+                j.title as job_title,
+                COALESCE(j.company_name, emp.company_name) as company_name,
+                vs.code as stall_code,
+                ja.status as interview_status,
+                ja.applied_at as interview_time
+            FROM job_applications ja
+            JOIN jobs j ON ja.job_id = j.id
+            LEFT JOIN candidates c ON (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id)
+            LEFT JOIN employers emp ON j.employer_id = emp.id
+            LEFT JOIN venue_stalls vs ON vs.employer_id = emp.id AND vs.event_id::text = j.event_id::text
+            WHERE j.event_id::text = $1
+            ORDER BY ja.applied_at DESC
+        `;
+        const logsRes = await pool.query(logsQuery, [eventId]);
+
+        res.json({ 
+            success: true, 
+            data: {
+                stalls: stallRes.rows,
+                logs: logsRes.rows
+            }
+        });
+    } catch (error) {
+        console.error("❌ Error fetching interview report:", error);
+        res.status(500).json({ success: false, message: "Server error fetching interview report." });
+    }
+});
+
+// ==========================================
+// EMPLOYER FEEDBACK MODERATION
+// ==========================================
 router.get('/feedback', async (req, res) => {
   try {
     const query = `
@@ -717,7 +766,6 @@ router.get('/feedback', async (req, res) => {
   }
 });
 
-// PATCH /api/admin/feedback/:id/status - Publish or Reject feedback
 router.patch('/feedback/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
