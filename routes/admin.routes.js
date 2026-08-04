@@ -285,7 +285,13 @@ router.delete('/stalls/:id', async (req, res) => {
     }
 });
 
-router.get('/stall-applications', async (req, res) => {
+
+// =====================================================================
+// --- FIXED: STALL APPLICATIONS (ACCEPTS HYPHEN & UNDERSCORE) ---
+// =====================================================================
+
+// GET: List all stall applications
+router.get(['/stall-applications', '/stall_applications'], async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT es.id, es.status, es.payment_status, es.applied_at, es.roles_to_hire as "rolesToHire", es.vacancies_count as "vacanciesCount",
@@ -295,7 +301,7 @@ router.get('/stall-applications', async (req, res) => {
             JOIN employers e ON es.employer_id = e.id 
             JOIN events ev ON es.event_id = ev.id
             LEFT JOIN venue_stalls s ON s.employer_id = e.id AND s.event_id = ev.id 
-            WHERE LOWER(ev.status) != 'completed' 
+            WHERE COALESCE(LOWER(ev.status), '') != 'completed' 
             ORDER BY es.applied_at DESC
         `);
         res.json({ success: true, data: result.rows });
@@ -305,12 +311,8 @@ router.get('/stall-applications', async (req, res) => {
     }
 });
 
-// =====================================================================
-// --- ADDED MISSING STALL APPROVAL/REJECTION ROUTES HERE ---
-// =====================================================================
-
 // PUT: Approve Stall Application
-router.put('/stall_applications/:id/approve', async (req, res) => {
+router.put(['/stall-applications/:id/approve', '/stall_applications/:id/approve'], async (req, res) => {
     try {
         await pool.query("UPDATE employer_event_stalls SET status = 'approved' WHERE id = $1", [req.params.id]);
         res.json({ success: true, message: "Application approved successfully" });
@@ -321,7 +323,7 @@ router.put('/stall_applications/:id/approve', async (req, res) => {
 });
 
 // PUT: Reject Stall Application
-router.put('/stall_applications/:id/reject', async (req, res) => {
+router.put(['/stall-applications/:id/reject', '/stall_applications/:id/reject'], async (req, res) => {
     try {
         await pool.query("UPDATE employer_event_stalls SET status = 'rejected' WHERE id = $1", [req.params.id]);
         res.json({ success: true, message: "Application rejected successfully" });
@@ -330,6 +332,7 @@ router.put('/stall_applications/:id/reject', async (req, res) => {
         res.status(500).json({ success: false, message: "Database error rejecting application" });
     }
 });
+
 
 // --- JOBS & APPROVALS ---
 router.get('/jobs', async (req, res) => {
@@ -415,16 +418,40 @@ router.put('/employers/:dbId/status', async (req, res) => {
     }
 });
 
+// --- CANDIDATE MODERATION & MANAGEMENT ---
 router.get('/candidates', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT c.unique_id AS id, c.full_name AS name, COALESCE(c.highest_qualification, 'N/A') AS qual,
-                   COALESCE(c.district, 'N/A') AS district, COALESCE(c.account_status, 'Pending') AS status,
+            SELECT c.unique_id AS id, c.full_name AS name, c.email, c.phone, 
+                   COALESCE(c.highest_qualification, 'N/A') AS qual,
+                   COALESCE(c.district, 'N/A') AS district, 
+                   COALESCE(c.account_status, 'Active') AS account_status,
                    EXISTS (SELECT 1 FROM event_candidate_registrations ecr WHERE ecr.candidate_id::text = c.unique_id AND LOWER(ecr.attendance_status) = 'present') AS attended
             FROM candidates c ORDER BY c.created_at DESC
         `);
         res.json({ success: true, data: result.rows });
     } catch (error) { res.status(500).json({ success: false }); }
+});
+
+router.put('/candidates/:id/block', async (req, res) => {
+    const { id } = req.params;
+    const { action } = req.body; // Expects 'Block' or 'Unblock'
+    
+    try {
+        const newStatus = action === 'Block' ? 'Blocked' : 'Active';
+        const result = await pool.query(
+            `UPDATE candidates SET account_status = $1 WHERE unique_id = $2 RETURNING unique_id, account_status`,
+            [newStatus, id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Candidate not found." });
+        }
+        res.json({ success: true, message: `Candidate account ${newStatus.toLowerCase()} successfully.`, data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error updating candidate status:", error);
+        res.status(500).json({ success: false, message: "Server error updating candidate status." });
+    }
 });
 
 // --- MONITORING & REPORTS ---
