@@ -160,6 +160,80 @@ router.delete('/representatives/:id', async (req, res) => {
     }
 });
 
+// 8. Get Exhibitor Branding for a Specific Event
+router.get('/:exhibitorId/branding/:eventId', async (req, res) => {
+    const { exhibitorId, eventId } = req.params;
+    try {
+        const result = await pool.query(
+            "SELECT * FROM exhibitor_event_branding WHERE exhibitor_id = $1 AND event_id = $2",
+            [exhibitorId, eventId]
+        );
+        res.json({ success: true, data: result.rows[0] || null });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// 9. Update Exhibitor Branding
+router.put('/:exhibitorId/branding/:eventId', async (req, res) => {
+    const { exhibitorId, eventId } = req.params;
+    const { brand_color, welcome_message, banner_url } = req.body;
+    try {
+        const result = await pool.query(`
+            INSERT INTO exhibitor_event_branding (exhibitor_id, event_id, brand_color, welcome_message, banner_url)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (exhibitor_id, event_id) 
+            DO UPDATE SET brand_color = EXCLUDED.brand_color, welcome_message = EXCLUDED.welcome_message, banner_url = EXCLUDED.banner_url
+            RETURNING *;
+        `, [exhibitorId, eventId, brand_color, welcome_message, banner_url]);
+        
+        res.json({ success: true, message: "Branding updated successfully!", data: result.rows[0] });
+    } catch (error) {
+        console.error("Error updating branding:", error);
+        res.status(500).json({ success: false, message: "Server error updating branding" });
+    }
+});
+
+// 10. Get Materials for an Event
+router.get('/:exhibitorId/materials/:eventId', async (req, res) => {
+    const { exhibitorId, eventId } = req.params;
+    try {
+        const result = await pool.query(
+            "SELECT * FROM exhibitor_event_materials WHERE exhibitor_id = $1 AND event_id = $2 ORDER BY created_at DESC",
+            [exhibitorId, eventId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// 11. Add Material
+router.post('/:exhibitorId/materials/:eventId', async (req, res) => {
+    const { exhibitorId, eventId } = req.params;
+    const { title, file_type, file_url } = req.body;
+    try {
+        const result = await pool.query(`
+            INSERT INTO exhibitor_event_materials (exhibitor_id, event_id, title, file_type, file_url)
+            VALUES ($1, $2, $3, $4, $5) RETURNING *
+        `, [exhibitorId, eventId, title, file_type, file_url]);
+        
+        res.json({ success: true, message: "Material uploaded successfully!", data: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error uploading material" });
+    }
+});
+
+// 12. Delete Material
+router.delete('/materials/:id', async (req, res) => {
+    try {
+        await pool.query("DELETE FROM exhibitor_event_materials WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Material removed." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 
 
 
