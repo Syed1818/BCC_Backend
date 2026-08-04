@@ -876,5 +876,49 @@ router.post('/notifications/send', async (req, res) => {
     }
 });
 
+// ==========================================
+// --- EXHIBITOR MANAGEMENT ---
+// ==========================================
+router.get('/exhibitors', async (req, res) => {
+    try {
+        const result = await pool.query(`SELECT id, company_name as name, email, phone, status, created_at FROM exhibitors ORDER BY created_at DESC`);
+        
+        const formattedData = result.rows.map(e => ({
+            id: `EXH-${String(e.id).padStart(3, '0')}`,
+            dbId: e.id,
+            name: e.name,
+            email: e.email || 'N/A',
+            phone: e.phone || 'N/A',
+            status: e.status || 'pending',
+            created_at: e.created_at
+        }));
+
+        res.json({ success: true, data: formattedData });
+    } catch (error) { 
+        console.error("❌ Error fetching exhibitors:", error);
+        res.status(500).json({ success: false, message: error.message }); 
+    }
+});
+
+router.put('/exhibitors/:dbId/status', async (req, res) => {
+    const { dbId } = req.params;
+    const { status } = req.body; // 'approved' or 'rejected'
+    try {
+        const result = await pool.query(
+            `UPDATE exhibitors SET status = $1 WHERE id = $2 RETURNING id, company_name as name, status`,
+            [status, dbId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "Exhibitor not found." });
+        }
+        res.json({ success: true, message: `Exhibitor status updated to ${status}`, data: result.rows[0] });
+    } catch (error) {
+        console.error("❌ Error updating exhibitor status:", error);
+        res.status(500).json({ success: false, message: "Server error updating exhibitor status." });
+    }
+});
+
+
 
 module.exports = router;
