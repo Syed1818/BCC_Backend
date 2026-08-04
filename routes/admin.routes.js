@@ -305,6 +305,32 @@ router.get('/stall-applications', async (req, res) => {
     }
 });
 
+// =====================================================================
+// --- ADDED MISSING STALL APPROVAL/REJECTION ROUTES HERE ---
+// =====================================================================
+
+// PUT: Approve Stall Application
+router.put('/stall_applications/:id/approve', async (req, res) => {
+    try {
+        await pool.query("UPDATE employer_event_stalls SET status = 'approved' WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Application approved successfully" });
+    } catch (error) {
+        console.error("Error approving stall:", error);
+        res.status(500).json({ success: false, message: "Database error approving application" });
+    }
+});
+
+// PUT: Reject Stall Application
+router.put('/stall_applications/:id/reject', async (req, res) => {
+    try {
+        await pool.query("UPDATE employer_event_stalls SET status = 'rejected' WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Application rejected successfully" });
+    } catch (error) {
+        console.error("Error rejecting stall:", error);
+        res.status(500).json({ success: false, message: "Database error rejecting application" });
+    }
+});
+
 // --- JOBS & APPROVALS ---
 router.get('/jobs', async (req, res) => {
     try {
