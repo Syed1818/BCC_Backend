@@ -328,16 +328,26 @@ router.put(['/stall-applications/:id/reject', '/stall_applications/:id/reject'],
     }
 });
 
-// --- JOBS & APPROVALS ---
+// =====================================================================
+// --- JOBS & APPROVALS (UPDATED FOR EVENTS HISTORY) ---
+// =====================================================================
 router.get('/jobs', async (req, res) => {
     try {
+        // Updated to JOIN events table so we get event names, event statuses, and vacancies
         const result = await pool.query(`
-            SELECT id, title, company_name, job_type, location, status, created_at, event_id 
-            FROM jobs 
-            ORDER BY created_at DESC
+            SELECT 
+                j.id, j.title, j.company_name, j.job_type, j.location, j.status, 
+                j.created_at, j.event_id, j.vacancies,
+                e.name as event_name, LOWER(e.status) as event_status
+            FROM jobs j 
+            LEFT JOIN events e ON j.event_id = e.id
+            ORDER BY j.created_at DESC
         `);
         res.json({ success: true, data: result.rows });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("❌ Error fetching jobs:", error);
+        res.status(500).json({ success: false }); 
+    }
 });
 
 router.get('/events/:eventId/jobs', async (req, res) => {
