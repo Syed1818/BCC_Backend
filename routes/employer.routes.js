@@ -43,7 +43,9 @@ const parseArray = (input) => {
     try { return JSON.parse(input); } catch (e) { return [input]; }
 };
 
+// =====================================================================
 // --- EMPLOYER DASHBOARD & ANALYTICS ---
+// =====================================================================
 router.get('/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
     try {
@@ -57,8 +59,12 @@ router.get('/:employerId/dashboard', async (req, res) => {
             }
         }
 
-        const profileRes = await pool.query("SELECT company_name, email FROM employers WHERE id = $1", [dbEmpId]);
+        // FETCH PROFILE AND FORMAT THE ID DIRECTLY ON THE SERVER
+        const profileRes = await pool.query("SELECT id, company_name, email FROM employers WHERE id = $1", [dbEmpId]);
         const profile = profileRes.rows.length > 0 ? profileRes.rows[0] : {};
+        if (profile.id) {
+            profile.formattedId = `BCC-UMP-EMP-${String(profile.id).padStart(9, '0')}`;
+        }
 
         const activeJobs = await pool.query(`
             SELECT COUNT(j.*) FROM jobs j
@@ -732,7 +738,6 @@ router.post('/feedback', async (req, res) => {
       });
     }
 
-    // 1. Resolve employerId to integer ID if email or string is passed
     let dbEmpId = employerId;
     if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
       const lookup = await pool.query(
@@ -746,7 +751,6 @@ router.post('/feedback', async (req, res) => {
       }
     }
 
-    // 2. Insert using exact table column names and pool.query
     const query = `
       INSERT INTO employer_feedback 
       (employer_id, overall_rating, candidate_quality, event_organization, hiring_efficiency, video_url, status)
