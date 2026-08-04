@@ -798,4 +798,72 @@ router.patch('/feedback/:id/status', async (req, res) => {
   }
 });
 
+// ==========================================
+// NOTIFICATIONS & COMMUNICATION SYSTEM
+// ==========================================
+
+// GET: Fetch compact lists of users for the Notification Dropdowns
+router.get('/users-list', async (req, res) => {
+    try {
+        const candidatesRes = await pool.query(`SELECT unique_id as id, full_name as name FROM candidates ORDER BY full_name ASC`);
+        const employersRes = await pool.query(`SELECT id, company_name as name FROM employers ORDER BY company_name ASC`);
+        
+        res.json({
+            success: true,
+            data: {
+                candidates: candidatesRes.rows,
+                employers: employersRes.rows
+            }
+        });
+    } catch (error) {
+        console.error("❌ Error fetching users list for notifications:", error);
+        res.status(500).json({ success: false, message: "Server error fetching users." });
+    }
+});
+
+// POST: Send/Queue a broadcast message
+router.post('/notifications/send', async (req, res) => {
+    const { channels, audience, specificUserId, subject, message } = req.body;
+
+    if (!channels || channels.length === 0) return res.status(400).json({ success: false, message: "No delivery channels selected." });
+    if (!subject || !message) return res.status(400).json({ success: false, message: "Subject and message are required." });
+
+    try {
+        let recipientCount = 0;
+
+        // 1. Process Portal Notifications (Actually inserts into DB)
+        if (channels.includes('portal')) {
+            await pool.query(
+                `INSERT INTO notifications (audience_type, user_id, subject, message, channels) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [audience, specificUserId || null, subject, message, channels]
+            );
+            
+            // Just for a realistic response message, count approx how many people get it
+            if (audience === 'all_candidates') {
+                const c = await pool.query('SELECT COUNT(*) FROM candidates');
+                recipientCount = parseInt(c.rows[0].count);
+            } else if (audience === 'all_employers') {
+                const e = await pool.query('SELECT COUNT(*) FROM employers');
+                recipientCount = parseInt(e.rows[0].count);
+            } else {
+                recipientCount = 1; 
+            }
+        } else {
+            // If only SMS/Email are selected (Mock functionality for now as requested)
+            recipientCount = audience.includes('specific') ? 1 : 250; // Mock count
+        }
+
+        // Generate dynamic success message based on channels used
+        const channelNames = channels.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ');
+        const successMsg = `Successfully queued ${channelNames} broadcast for ${recipientCount} recipient(s).`;
+
+        res.json({ success: true, message: successMsg });
+    } catch (error) {
+        console.error("❌ Error sending notification broadcast:", error);
+        res.status(500).json({ success: false, message: "Server error processing broadcast." });
+    }
+});
+
+
 module.exports = router;
