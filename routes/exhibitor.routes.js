@@ -108,5 +108,59 @@ router.post('/:exhibitorId/events/:eventId/register', async (req, res) => {
     }
 });
 
+// 6. Fetch Approved Events for Exhibitor (For assigning staff)
+router.get('/:exhibitorId/approved-events', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT e.id, e.name 
+            FROM events e
+            JOIN exhibitor_event_stalls ees ON e.id = ees.event_id
+            WHERE ees.exhibitor_id = $1 AND ees.status = 'approved'
+        `, [req.params.exhibitorId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// 7. Manage Representatives
+router.get('/:exhibitorId/representatives', async (req, res) => {
+    try {
+        const result = await pool.query(
+            "SELECT * FROM exhibitor_representatives WHERE exhibitor_id = $1 ORDER BY created_at DESC", 
+            [req.params.exhibitorId]
+        );
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+router.post('/:exhibitorId/representatives', async (req, res) => {
+    const { full_name, email, phone, role, assigned_events } = req.body;
+    try {
+        const result = await pool.query(`
+            INSERT INTO exhibitor_representatives (exhibitor_id, full_name, email, phone, role, assigned_events)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
+        `, [req.params.exhibitorId, full_name, email, phone, role, JSON.stringify(assigned_events || [])]);
+        
+        res.json({ success: true, message: "Representative added successfully!", data: result.rows[0] });
+    } catch (error) {
+        console.error("Error adding rep:", error);
+        res.status(500).json({ success: false, message: "Server error adding representative" });
+    }
+});
+
+router.delete('/representatives/:id', async (req, res) => {
+    try {
+        await pool.query("DELETE FROM exhibitor_representatives WHERE id = $1", [req.params.id]);
+        res.json({ success: true, message: "Representative removed." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+
+
 
 module.exports = router;
