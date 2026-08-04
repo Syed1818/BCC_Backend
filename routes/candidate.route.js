@@ -11,7 +11,7 @@ router.get('/:id/saved-jobs', async (req, res) => {
 
         const candidateDbId = candCheck.rows[0].id;
         
-        // 🚨 STRICT BLOCKLIST APPLIED TO SAVED JOBS + FETCHING APPLICATION STATUS 🚨
+        // Fetch all saved jobs first
         const result = await pool.query(`
             SELECT 
                 sj.id as saved_id, sj.status as save_status, sj.updated_at, 
@@ -23,16 +23,25 @@ router.get('/:id/saved-jobs', async (req, res) => {
             LEFT JOIN events e ON j.event_id = e.id
             LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
             WHERE sj.candidate_id = $2
-              AND (j.status IS NULL OR TRIM(LOWER(j.status)) NOT IN ('closed', 'inactive', 'deleted', 'filled', 'expired'))
-              AND (e.id IS NULL OR e.status IS NULL OR TRIM(LOWER(e.status)) NOT IN ('completed', 'closed', 'past', 'ended'))
             ORDER BY sj.updated_at DESC
         `, [candidateStringId, candidateDbId]);
 
-        // Map it to match the expected frontend format
-        const formattedJobs = result.rows.map(job => ({
-            ...job,
-            id: job.job_id // Ensure the ID matches the actual job ID for applying
-        }));
+        // 🚨 BULLETPROOF JAVASCRIPT BLOCKLIST APPLIED TO SAVED JOBS 🚨
+        const formattedJobs = [];
+        for (let job of result.rows) {
+            // Strip out hidden spaces, newlines, and dirty database formatting
+            const rawJStat = (job.job_status || '').toLowerCase().replace(/[^a-z]/g, '');
+            const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
+
+            // Physically block closed jobs / completed events from showing up in Saved Jobs!
+            if (['closed', 'inactive', 'deleted', 'filled', 'expired'].includes(rawJStat)) continue;
+            if (['completed', 'closed', 'past', 'ended'].includes(rawEStat)) continue;
+
+            formattedJobs.push({
+                ...job,
+                id: job.job_id // Ensure the ID matches the actual job ID for applying
+            });
+        }
 
         res.json({ success: true, data: formattedJobs });
     } catch (error) {
