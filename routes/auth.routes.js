@@ -258,7 +258,7 @@ router.post('/employer/register', function (req, res, next) {
 
 
 // =====================================================================
-// --- EMPLOYER PROFILE & PoC MANAGEMENT (NEW!) ---
+// --- EMPLOYER PROFILE & PoC MANAGEMENT ---
 // =====================================================================
 
 // 1. Fetch Company Profile Data
@@ -506,6 +506,39 @@ router.post('/login', async (req, res) => {
             return res.json({ success: true, data: { id: loggedInId, name: employer.company_name, email: employer.email, role: 'employer', isHr: isHrAccount, hrName: isHrAccount ? employer.full_name : null } });
         }
 
+        // --- NEW EXHIBITOR LOGIN FLOW ---
+        if (role === 'exhibitor') {
+            const cleanInput = rawInput.toLowerCase();
+            const cleanCompany = company_name ? company_name.trim().toLowerCase() : "";
+
+            const exhResult = await pool.query(
+                "SELECT * FROM exhibitors WHERE LOWER(TRIM(email)) = $1 OR LOWER(TRIM(company_name)) = $2", 
+                [cleanInput, cleanCompany]
+            );
+
+            if (exhResult.rows.length === 0) {
+                return res.status(401).json({ success: false, message: 'Exhibitor account not found for this company name.' });
+            }
+
+            const exhibitor = exhResult.rows[0];
+            const currentStatus = (exhibitor.status || 'pending').toLowerCase().trim();
+
+            if (currentStatus === 'pending') return res.status(403).json({ success: false, message: 'Your exhibitor registration is currently PENDING admin approval.' });
+            if (currentStatus === 'rejected' || currentStatus === 'blacklisted') return res.status(403).json({ success: false, message: 'Your exhibitor registration has been restricted by the admin.' });
+            if (currentStatus !== 'approved') return res.status(403).json({ success: false, message: 'Account not approved for login.' });
+
+            let isMatch = exhibitor.password && exhibitor.password.startsWith('$2') 
+                ? await bcrypt.compare(password, exhibitor.password) 
+                : (password === exhibitor.password);
+
+            if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
+
+            return res.json({ 
+                success: true, 
+                data: { id: exhibitor.id, name: exhibitor.company_name, email: exhibitor.email, role: 'exhibitor' } 
+            });
+        }
+
         if (role === 'candidate' || !role) {
             const queryText = `
                 SELECT * FROM candidates 
@@ -641,20 +674,29 @@ router.put('/candidate/profile/update', async (req, res) => {
 // --- FORGOT & RESET PASSWORD ---
 // =====================================================================
 router.post('/forgot-password', async (req, res) => {
-    const { identifier } = req.body;
+    const { identifier, role } = req.body;
     const rawInput = identifier ? identifier.trim() : "";
     const digitsOnly = rawInput.replace(/\D/g, "");
     const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
     try {
-        const queryText = `
-            SELECT id FROM candidates 
-            WHERE LOWER(TRIM(email)) = LOWER($1) 
-               OR LOWER(TRIM(unique_id)) = LOWER($1)
-               OR TRIM(phone) = $1
-               OR ($2 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $2)
-        `;
-        const result = await pool.query(queryText, [rawInput, last10Digits]);
+        let result;
+
+        // Route the forgotten password check to the correct database table based on user role
+        if (role === 'employer') {
+            result = await pool.query("SELECT id FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+        } else if (role === 'exhibitor') {
+            result = await pool.query("SELECT id FROM exhibitors WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+        } else {
+            const queryText = `
+                SELECT id FROM candidates 
+                WHERE LOWER(TRIM(email)) = LOWER($1) 
+                   OR LOWER(TRIM(unique_id)) = LOWER($1)
+                   OR TRIM(phone) = $1
+                   OR ($2 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $2)
+            `;
+            result = await pool.query(queryText, [rawInput, last10Digits]);
+        }
 
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "No registered account found with these details." });
@@ -667,7 +709,7 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 router.post('/reset-password', async (req, res) => {
-    const { identifier, otp, newPassword } = req.body;
+    const { identifier, otp, newPassword, role } = req.body;
     
     if (otp !== "1234" && otp !== "123456") {
         return res.status(400).json({ success: false, message: "Invalid OTP code." });
@@ -678,16 +720,35 @@ router.post('/reset-password', async (req, res) => {
     const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
 
     try {
-        const updateQuery = `
-            UPDATE candidates 
-            SET password = $1 
-            WHERE LOWER(TRIM(email)) = LOWER($2) 
-               OR LOWER(TRIM(unique_id)) = LOWER($2)
-               OR TRIM(phone) = $2
-               OR ($3 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $3)
-            RETURNING unique_id;
-        `;
-        const result = await pool.query(updateQuery, [newPassword, rawInput, last10Digits]);
+        let result;
+
+        // Route the password update to the correct database table based on user role
+        if (role === 'employer') {
+            const salt = await bcrypt.genSalt(10);
+            const hashed = await bcrypt.hash(newPassword, salt);
+            result = await pool.query(
+                "UPDATE employers SET password_hash = $1, password = $2 WHERE LOWER(TRIM(email)) = LOWER($3) RETURNING id",
+                [hashed, newPassword, rawInput]
+            );
+        } else if (role === 'exhibitor') {
+            const salt = await bcrypt.genSalt(10);
+            const hashed = await bcrypt.hash(newPassword, salt);
+            result = await pool.query(
+                "UPDATE exhibitors SET password = $1 WHERE LOWER(TRIM(email)) = LOWER($2) RETURNING id",
+                [hashed, rawInput]
+            );
+        } else {
+            const updateQuery = `
+                UPDATE candidates 
+                SET password = $1 
+                WHERE LOWER(TRIM(email)) = LOWER($2) 
+                   OR LOWER(TRIM(unique_id)) = LOWER($2)
+                   OR TRIM(phone) = $2
+                   OR ($3 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $3)
+                RETURNING unique_id;
+            `;
+            result = await pool.query(updateQuery, [newPassword, rawInput, last10Digits]);
+        }
 
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Account update failed. User not found." });
