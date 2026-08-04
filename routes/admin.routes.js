@@ -375,22 +375,46 @@ router.put('/jobs/:jobId/status', async (req, res) => {
     }
 });
 
-// --- EMPLOYERS & CANDIDATES MANAGEMENT ---
+// =====================================================================
+// --- EMPLOYERS MANAGEMENT (UPDATED FOR POC & CONTACT DETAILS) ---
+// =====================================================================
 router.get('/employers', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT e.id, e.company_name AS name, COALESCE(e.gst_cin, 'Pending') AS gst_status, e.status,
-                   COALESCE(AVG(ef.overall_rating), 4.0)::numeric(2,1) AS rating,
+            SELECT e.id, e.company_name AS name, e.email, e.phone, COALESCE(e.gst_cin, 'Pending') AS gst_status, e.status,
                    (SELECT COUNT(*) FROM jobs j WHERE j.employer_id = e.id AND j.status = 'approved') AS jobs
-            FROM employers e LEFT JOIN employer_feedback ef ON e.id = ef.employer_id GROUP BY e.id ORDER BY e.created_at DESC
+            FROM employers e 
+            ORDER BY e.created_at DESC
         `);
-        const formattedData = result.rows.map(e => ({
-            id: `EMP-${String(e.id).padStart(3, '0')}`, dbId: e.id, name: e.name,
-            gst: e.gst_status !== 'Pending' ? 'Verified' : 'Pending', jobs: parseInt(e.jobs) || 0,
-            rating: parseFloat(e.rating), status: e.status === 'approved' ? 'Active' : e.status === 'blacklisted' ? 'Blacklisted' : 'Pending'
-        }));
+        
+        // Safely fetch PoC data if the table exists (Prevents server crash if no PoC table is defined)
+        let pocData = [];
+        try {
+            const pocsResult = await pool.query("SELECT employer_id, email, phone FROM employer_pocs");
+            pocData = pocsResult.rows;
+        } catch (err) {
+            // Ignore error if table doesn't exist yet
+        }
+
+        const formattedData = result.rows.map(e => {
+            const employerPocs = pocData.filter(p => p.employer_id === e.id);
+            return {
+                id: `EMP-${String(e.id).padStart(3, '0')}`, 
+                dbId: e.id, 
+                name: e.name,
+                email: e.email,
+                phone: e.phone,
+                gst: e.gst_status !== 'Pending' ? 'Verified' : 'Pending', 
+                jobs: parseInt(e.jobs) || 0,
+                status: e.status, // We leave status as is from DB ('approved', 'rejected', 'deleted', 'pending')
+                pocs: employerPocs
+            };
+        });
         res.json({ success: true, data: formattedData });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("Error fetching employers:", error);
+        res.status(500).json({ success: false }); 
+    }
 });
 
 router.put('/employers/:dbId/status', async (req, res) => {
@@ -413,6 +437,7 @@ router.put('/employers/:dbId/status', async (req, res) => {
     }
 });
 
+// --- CANDIDATE MODERATION & MANAGEMENT ---
 router.get('/candidates', async (req, res) => {
     try {
         const result = await pool.query(`
