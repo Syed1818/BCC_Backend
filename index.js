@@ -7,8 +7,9 @@ const authRoutes = require('./routes/auth.routes');
 const adminRoutes = require('./routes/admin.routes');
 const candidateRoutes = require('./routes/candidate.route');
 const employerRoutes = require('./routes/employer.routes');
-const eventRoutes = require('./routes/events.routes');         // We will create this below
-const applicationRoutes = require('./routes/applications.routes'); // We will create this below
+const exhibitorRoutes = require('./routes/exhibitor.routes'); // <-- NEW Exhibitor Routes
+const eventRoutes = require('./routes/events.routes');         
+const applicationRoutes = require('./routes/applications.routes'); 
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,8 +34,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/candidate', candidateRoutes);
 app.use('/api/employer', employerRoutes);
-app.use('/api/events', eventRoutes);             // Catch-all for generic event routes
-app.use('/api/applications', applicationRoutes); // Catch-all for generic application routes
+app.use('/api/exhibitor', exhibitorRoutes);      // <-- MOUNTED Exhibitor Routes
+app.use('/api/events', eventRoutes);             
+app.use('/api/applications', applicationRoutes); 
 
 // 5. SERVER STARTUP
 app.listen(PORT, () => {
