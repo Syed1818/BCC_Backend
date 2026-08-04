@@ -223,8 +223,6 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id;
         }
 
-        // 🚨 STRICT FILTERING ADDED HERE 🚨
-        // This physically stops closed jobs and completed events from being sent to the candidate feed
         const jobsQuery = `
             SELECT j.*, j.status as job_status, e.name as event_name, e.status as event_status,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
@@ -232,8 +230,6 @@ router.get('/:id/jobs', async (req, res) => {
             FROM jobs j
             LEFT JOIN events e ON j.event_id = e.id
             LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
-            WHERE (j.status IS NULL OR LOWER(j.status) IN ('open', 'active', 'approved', 'live', 'published'))
-              AND (e.id IS NULL OR LOWER(e.status) NOT IN ('completed', 'closed', 'past', 'ended'))
             ORDER BY j.created_at DESC;
         `;
 
@@ -248,7 +244,19 @@ router.get('/:id/jobs', async (req, res) => {
             } catch(err) {}
         }
 
-        const processedJobs = jobs.map(job => {
+        let processedJobs = [];
+        
+        // 🚨 BULLETPROOF JAVASCRIPT BLOCKLIST 🚨
+        for (let job of jobs) {
+            // Regex to rip out EVERY hidden space, newline, or weird formatting
+            // Turns " Closed\r\n" strictly into "closed"
+            const rawJStat = (job.job_status || job.status || '').toLowerCase().replace(/[^a-z]/g, '');
+            const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
+
+            // If the stripped status matches any of these, physically DELETE it from the candidate's view!
+            if (['closed', 'inactive', 'deleted', 'filled', 'expired'].includes(rawJStat)) continue;
+            if (['completed', 'closed', 'past', 'ended'].includes(rawEStat)) continue;
+
             let jobSkills = [];
             try {
                 if (typeof job.skills === 'string') jobSkills = JSON.parse(job.skills);
@@ -257,7 +265,7 @@ router.get('/:id/jobs', async (req, res) => {
                 else if (Array.isArray(job.skills_required)) jobSkills = job.skills_required;
             } catch(e) {}
 
-            return {
+            processedJobs.push({
                 id: job.id,
                 company: job.company_name || job.company,
                 title: job.title,
@@ -275,8 +283,8 @@ router.get('/:id/jobs', async (req, res) => {
                 application_status: job.application_status,
                 matchScore: 85,
                 isSaved: savedJobIds.has(job.id)
-            };
-        });
+            });
+        }
 
         res.json({ success: true, data: processedJobs });
     } catch (error) {
