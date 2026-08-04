@@ -297,6 +297,39 @@ router.put('/leads/:leadId', async (req, res) => {
     }
 });
 
+// 16. Fetch Notifications (Specific to Exhibitor + Global Broadcasts)
+router.get('/:exhibitorId/notifications', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT * FROM exhibitor_notifications 
+            WHERE exhibitor_id = $1 OR exhibitor_id IS NULL 
+            ORDER BY created_at DESC
+        `, [req.params.exhibitorId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error fetching notifications." });
+    }
+});
+
+// 17. Mark Single Notification as Read
+router.put('/notifications/:id/read', async (req, res) => {
+    try {
+        await pool.query("UPDATE exhibitor_notifications SET is_read = TRUE WHERE id = $1", [req.params.id]);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+// 18. Mark All Notifications as Read
+router.put('/:exhibitorId/notifications/read-all', async (req, res) => {
+    try {
+        await pool.query("UPDATE exhibitor_notifications SET is_read = TRUE WHERE exhibitor_id = $1 OR exhibitor_id IS NULL", [req.params.exhibitorId]);
+        res.json({ success: true, message: "All notifications marked as read." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
 
 
 
