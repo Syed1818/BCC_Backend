@@ -223,15 +223,14 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id;
         }
 
-        // ADDED: e.status as event_status
         const jobsQuery = `
-            SELECT j.*, e.name as event_name, e.status as event_status,
+            SELECT j.*, j.status as job_status, e.name as event_name, e.status as event_status,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
-            INNER JOIN events e ON j.event_id = e.id
+            LEFT JOIN events e ON j.event_id = e.id
             LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
-            WHERE j.status = 'Open' OR j.status = 'Active' OR j.status = 'approved' OR j.status IS NULL
+            WHERE (j.status IS NULL OR j.status != 'Deleted')
             ORDER BY j.created_at DESC;
         `;
 
@@ -266,9 +265,11 @@ router.get('/:id/jobs', async (req, res) => {
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
                 event_name: job.event_name,
-                event_status: job.event_status, // ADDED THIS MAPPING
+                event_status: job.event_status || 'upcoming',
+                job_status: job.job_status || job.status || 'Open',
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
+                application_status: job.application_status,
                 matchScore: 85,
                 isSaved: savedJobIds.has(job.id)
             };
