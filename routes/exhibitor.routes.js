@@ -6,12 +6,21 @@ const pool = require('../config/db');
 // EXHIBITOR PANEL ROUTES
 // ==========================================
 
-// 1. Dashboard Data (Skeleton)
+// 1. Dashboard Stats Endpoint
 router.get('/dashboard/:id', async (req, res) => {
+    const exhibitorId = req.params.id;
     try {
-        // We will add the actual dashboard stats query here later
-        res.json({ success: true, message: "Exhibitor dashboard connected" });
+        res.json({ 
+            success: true, 
+            data: {
+                activeEvents: 1,
+                visitorLeads: 0,
+                representatives: 0,
+                promotions: 0
+            }
+        });
     } catch (error) {
+        console.error("Error fetching exhibitor dashboard:", error);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
