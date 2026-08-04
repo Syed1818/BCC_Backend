@@ -113,7 +113,7 @@ router.get('/live-events', async (req, res) => {
 router.get('/events', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT id, name, event_date, event_type, city, employer_capacity, status, stall_price,
+            SELECT id, name, event_date, event_time, poster, event_type, city, employer_capacity, status, stall_price,
             (SELECT COUNT(*) FROM employer_event_stalls WHERE event_id = events.id) as registered_count
             FROM events ORDER BY event_date DESC
         `);
@@ -122,24 +122,35 @@ router.get('/events', async (req, res) => {
 });
 
 router.post('/events', async (req, res) => {
-    const { name, date, type, city, venue, maps_link, capacity, price, desc } = req.body;
+    const { name, date, time, type, city, venue, maps_link, capacity, price, poster, desc } = req.body;
     try {
         const qrString = `GATE_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
         await pool.query(`
-            INSERT INTO events (name, event_date, event_type, city, venue_address, google_maps_link, employer_capacity, stall_price, qr_code_string, status, description) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'upcoming', $10)
-        `, [name, date, type, city, venue, maps_link, parseInt(capacity), parseFloat(price), qrString, desc]);
+            INSERT INTO events (name, event_date, event_time, event_type, city, venue_address, google_maps_link, employer_capacity, stall_price, poster, qr_code_string, status, description) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'upcoming', $12)
+        `, [name, date, time || null, type, city, venue, maps_link, parseInt(capacity) || null, parseFloat(price) || null, poster || null, qrString, desc]);
         res.status(201).json({ success: true, message: 'Event created' });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("Error creating event:", error);
+        res.status(500).json({ success: false }); 
+    }
 });
 
 router.put('/events/:id', async (req, res) => {
-    const { name, event_date, event_type, city, venue_address, employer_capacity, stall_price, description } = req.body;
+    const { name, event_date, event_time, event_type, city, venue_address, google_maps_link, employer_capacity, stall_price, poster, description } = req.body;
     try {
-        await pool.query(`UPDATE events SET name = $1, event_date = $2, event_type = $3, city = $4, venue_address = $5, employer_capacity = $6, stall_price = $7, description = $8 WHERE id = $9`, 
-        [name, event_date, event_type, city, venue_address, parseInt(employer_capacity), parseFloat(stall_price), description, req.params.id]);
+        await pool.query(`
+            UPDATE events SET 
+                name = $1, event_date = $2, event_time = $3, event_type = $4, city = $5, 
+                venue_address = $6, google_maps_link = $7, employer_capacity = $8, 
+                stall_price = $9, poster = $10, description = $11 
+            WHERE id = $12
+        `, [name, event_date, event_time || null, event_type, city, venue_address, google_maps_link, parseInt(employer_capacity) || null, parseFloat(stall_price) || null, poster || null, description, req.params.id]);
         res.json({ success: true, message: 'Event details updated successfully' });
-    } catch (error) { res.status(500).json({ success: false }); }
+    } catch (error) { 
+        console.error("Error updating event:", error);
+        res.status(500).json({ success: false }); 
+    }
 });
 
 router.put('/events/:id/hold', async (req, res) => {
