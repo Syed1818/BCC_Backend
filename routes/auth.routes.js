@@ -760,4 +760,55 @@ router.post('/reset-password', async (req, res) => {
     }
 });
 
+// =====================================================================
+// --- EXHIBITOR REGISTRATION ---
+// =====================================================================
+router.post('/exhibitor/register', async (req, res) => {
+    const data = req.body;
+
+    try {
+        if (!data.company_name || !data.email || !data.password) {
+            return res.status(400).json({ success: false, message: "Company Name, Email, and Password are required." });
+        }
+
+        const cleanEmail = data.email.trim().toLowerCase();
+
+        // Check if email already exists in exhibitors
+        const userExists = await pool.query("SELECT * FROM exhibitors WHERE LOWER(email) = $1", [cleanEmail]);
+        if (userExists.rows.length > 0) {
+            return res.status(400).json({ success: false, message: "This Email is already registered as an exhibitor. Please log in." });
+        }
+        
+        const salt = await bcrypt.genSalt(10);
+        const password_hash = await bcrypt.hash(data.password, salt);
+
+        const query = `
+            INSERT INTO exhibitors (company_name, email, phone, password, status) 
+            VALUES ($1, $2, $3, $4, 'pending') RETURNING id;
+        `;
+
+        const values = [
+            data.company_name.trim(), 
+            cleanEmail, 
+            data.phone || null, 
+            password_hash
+        ];
+
+        const result = await pool.query(query, values);
+        const formattedId = String(result.rows[0].id).padStart(3, '0');
+
+        res.status(201).json({ 
+            success: true, 
+            message: "Exhibitor registration submitted successfully! Pending admin approval.",
+            uniqueId: `EXH-${formattedId}` 
+        });
+
+    } catch (error) { 
+        console.error("❌ Exhibitor Registration Error:", error);
+        res.status(500).json({ success: false, message: "Server error during registration." }); 
+    }
+});
+
+
+
 module.exports = router;
