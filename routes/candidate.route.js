@@ -91,15 +91,59 @@ router.get('/profile/:id', async (req, res) => {
         const result = await pool.query("SELECT * FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
         if (result.rows.length === 0) return res.status(404).json({ success: false });
         const dbUser = result.rows[0];
+
+        // Safe JSON or text parser helper for skills
+        const parseSkills = (val) => {
+            if (!val) return [];
+            if (Array.isArray(val)) return val;
+            try {
+                const parsed = JSON.parse(val);
+                return Array.isArray(parsed) ? parsed : [val];
+            } catch (e) {
+                return typeof val === 'string' ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+            }
+        };
+
         res.json({ success: true, data: {
-            uniqueId: dbUser.unique_id, fullName: dbUser.full_name, email: dbUser.email, phone: dbUser.phone, dob: dbUser.dob ? new Date(dbUser.dob).toISOString().split('T')[0] : "", gender: dbUser.gender, language: dbUser.preferred_language, category: dbUser.category,
-            state: dbUser.state, district: dbUser.district, taluk: dbUser.taluk, pincode: dbUser.pincode, qualification: dbUser.highest_qualification, institution: dbUser.institution, schoolName: dbUser.school_name,
-            course: dbUser.course, specialization: dbUser.specialization, yearOfPassing: dbUser.year_of_passing, percentage: dbUser.percentage_cgpa, languagesFluent: dbUser.languages_fluent || [], skills: dbUser.skills || [],
-            experienceType: dbUser.experience_type, yearsOfExperience: dbUser.years_of_experience, employmentStatus: dbUser.employment_status, currentRole: dbUser.current_job_role, currentCompany: dbUser.current_company,
-            resumeFileName: dbUser.resume_file_name, preferredRoles: dbUser.preferred_roles || [], preferredLocations: dbUser.preferred_locations || [],
-            preferredJobType: dbUser.preferred_job_type, expectedSalary: dbUser.expected_salary, willingToRelocate: dbUser.willing_to_relocate
+            uniqueId: dbUser.unique_id, 
+            fullName: dbUser.full_name, 
+            email: dbUser.email, 
+            phone: dbUser.phone, 
+            dob: dbUser.dob ? new Date(dbUser.dob).toISOString().split('T')[0] : "", 
+            gender: dbUser.gender, 
+            language: dbUser.preferred_language, 
+            category: dbUser.category,
+            state: dbUser.state, 
+            district: dbUser.district, 
+            taluk: dbUser.taluk, 
+            pincode: dbUser.pincode, 
+            qualification: dbUser.highest_qualification, 
+            institution: dbUser.institution, 
+            schoolName: dbUser.school_name,
+            course: dbUser.course, 
+            specialization: dbUser.specialization, 
+            yearOfPassing: dbUser.year_of_passing, 
+            percentage: dbUser.percentage_cgpa, 
+            languagesFluent: dbUser.languages_fluent || [], 
+            skills: parseSkills(dbUser.skills),
+            technicalSkills: parseSkills(dbUser.technical_skills),
+            nonTechnicalSkills: parseSkills(dbUser.non_technical_skills),
+            experienceType: dbUser.experience_type, 
+            yearsOfExperience: dbUser.years_of_experience, 
+            employmentStatus: dbUser.employment_status, 
+            currentRole: dbUser.current_job_role, 
+            currentCompany: dbUser.current_company,
+            resumeFileName: dbUser.resume_file_name, 
+            preferredRoles: dbUser.preferred_roles || [], 
+            preferredLocations: dbUser.preferred_locations || [],
+            preferredJobType: dbUser.preferred_job_type, 
+            expectedSalary: dbUser.expected_salary, 
+            willingToRelocate: dbUser.willing_to_relocate
         }});
-    } catch (e) { res.status(500).json({ success: false }); }
+    } catch (e) { 
+        console.error("Profile fetch error:", e);
+        res.status(500).json({ success: false }); 
+    }
 });
 
 router.put('/profile/update', async (req, res) => {
