@@ -92,56 +92,67 @@ router.get('/profile/:id', async (req, res) => {
         if (result.rows.length === 0) return res.status(404).json({ success: false });
         const dbUser = result.rows[0];
 
-        // Safe JSON or text parser helper for skills
-        const parseSkills = (val) => {
-            if (!val) return [];
-            if (Array.isArray(val)) return val;
-            try {
-                const parsed = JSON.parse(val);
-                return Array.isArray(parsed) ? parsed : [val];
-            } catch (e) {
-                return typeof val === 'string' ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
-            }
+        const parseJSON = (val, fallback) => {
+            if (!val) return fallback;
+            if (typeof val === 'object') return val;
+            try { return JSON.parse(val); } catch(e) { return fallback; }
         };
 
         res.json({ success: true, data: {
             uniqueId: dbUser.unique_id, 
             fullName: dbUser.full_name, 
+            fatherName: dbUser.father_name,
+            motherName: dbUser.mother_name,
             email: dbUser.email, 
             phone: dbUser.phone, 
+            aadhaar: dbUser.aadhaar,
             dob: dbUser.dob ? new Date(dbUser.dob).toISOString().split('T')[0] : "", 
             gender: dbUser.gender, 
-            language: dbUser.preferred_language, 
+            religion: dbUser.religion,
             category: dbUser.category,
+            linkedinUrl: dbUser.linkedin_url,
+            githubUrl: dbUser.github_url,
+            hasDisability: dbUser.has_disability,
+            udid: dbUser.udid,
+            disabilities: parseJSON(dbUser.disabilities, []),
+            currentAddress: parseJSON(dbUser.current_address, {}),
+            permanentAddress: parseJSON(dbUser.permanent_address, {}),
             state: dbUser.state, 
             district: dbUser.district, 
             taluk: dbUser.taluk, 
             pincode: dbUser.pincode, 
             qualification: dbUser.highest_qualification, 
             institution: dbUser.institution, 
+            boardUniversity: dbUser.board_university,
             schoolName: dbUser.school_name,
             course: dbUser.course, 
             specialization: dbUser.specialization, 
             yearOfPassing: dbUser.year_of_passing, 
             percentage: dbUser.percentage_cgpa, 
-            languagesFluent: dbUser.languages_fluent || [], 
-            skills: parseSkills(dbUser.skills),
-            technicalSkills: parseSkills(dbUser.technical_skills),
-            nonTechnicalSkills: parseSkills(dbUser.non_technical_skills),
+            languagesFluent: parseJSON(dbUser.languages_fluent, []), 
+            skills: parseJSON(dbUser.skills, []),
+            technicalSkills: parseJSON(dbUser.technical_skills, []),
+            nonTechnicalSkills: parseJSON(dbUser.non_technical_skills, []),
+            skillProficiencies: parseJSON(dbUser.skill_proficiencies, {}),
             experienceType: dbUser.experience_type, 
             yearsOfExperience: dbUser.years_of_experience, 
             employmentStatus: dbUser.employment_status, 
             currentRole: dbUser.current_job_role, 
             currentCompany: dbUser.current_company,
             resumeFileName: dbUser.resume_file_name, 
-            preferredRoles: dbUser.preferred_roles || [], 
-            preferredLocations: dbUser.preferred_locations || [],
+            profilePhoto: dbUser.profile_photo,
+            backgroundImage: dbUser.background_image,
+            opportunities: parseJSON(dbUser.opportunities, []),
+            aspirantType: dbUser.aspirant_type,
+            preferredSectors: parseJSON(dbUser.preferred_sectors, []),
+            preferredRoles: parseJSON(dbUser.preferred_roles || [], []), 
+            preferredLocations: parseJSON(dbUser.preferred_locations || [], []),
             preferredJobType: dbUser.preferred_job_type, 
             expectedSalary: dbUser.expected_salary, 
             willingToRelocate: dbUser.willing_to_relocate
         }});
     } catch (e) { 
-        console.error("Profile fetch error:", e);
+        console.error("Profile GET error:", e);
         res.status(500).json({ success: false }); 
     }
 });
@@ -150,17 +161,29 @@ router.put('/profile/update', async (req, res) => {
     const data = req.body;
     try {
         await pool.query(`
-            UPDATE candidates SET full_name=$1, email=$2, phone=$3, dob=$4, gender=$5, preferred_language=$6, category=$7, state=$8, district=$9, taluk=$10, pincode=$11,
-            highest_qualification=$12, institution=$13, school_name=$14, course=$15, specialization=$16, year_of_passing=$17, percentage_cgpa=$18, languages_fluent=$19,
-            skills=$20, experience_type=$21, years_of_experience=$22, employment_status=$23, current_job_role=$24, current_company=$25,
-            resume_file_name=$26, preferred_roles=$27, preferred_locations=$28, willing_to_relocate=$29, preferred_job_type=$30, expected_salary=$31 WHERE unique_id=$32
+            UPDATE candidates SET 
+                full_name=$1, father_name=$2, mother_name=$3, email=$4, phone=$5, aadhaar=$6, dob=$7, gender=$8, religion=$9, category=$10, 
+                linkedin_url=$11, github_url=$12, has_disability=$13, udid=$14, disabilities=$15, current_address=$16, permanent_address=$17,
+                highest_qualification=$18, institution=$19, board_university=$20, school_name=$21, course=$22, specialization=$23, year_of_passing=$24, percentage_cgpa=$25, 
+                languages_fluent=$26, skills=$27, technical_skills=$28, non_technical_skills=$29, skill_proficiencies=$30, 
+                experience_type=$31, years_of_experience=$32, employment_status=$33, current_job_role=$34, current_company=$35,
+                resume_file_name=$36, profile_photo=$37, background_image=$38, opportunities=$39, aspirant_type=$40, 
+                preferred_sectors=$41, preferred_roles=$42, preferred_locations=$43, willing_to_relocate=$44, preferred_job_type=$45, expected_salary=$46 
+            WHERE unique_id=$47 OR id::text=$47
         `, [
-            data.fullName, data.email, data.phone, data.dob || null, data.gender, data.language, data.category, data.state, data.district, data.taluk, data.pincode, data.qualification, data.institution, data.schoolName, data.course, data.specialization, data.yearOfPassing, data.percentage, JSON.stringify(data.languagesFluent || []),
-            JSON.stringify(data.skills || []), data.experienceType, data.yearsOfExperience, data.employmentStatus, data.currentRole, data.currentCompany,
-            data.resumeFileName, JSON.stringify(data.preferredRoles || []), JSON.stringify(data.preferredLocations || []), data.willing_to_relocate || false, data.preferredJobType, data.expectedSalary, data.uniqueId
+            data.fullName, data.fatherName || null, data.motherName || null, data.email, data.phone, data.aadhaar || null, data.dob || null, data.gender, data.religion || null, data.category,
+            data.linkedinUrl || null, data.githubUrl || null, data.hasDisability || 'No', data.udid || null, JSON.stringify(data.disabilities || []), JSON.stringify(data.currentAddress || {}), JSON.stringify(data.permanentAddress || {}),
+            data.qualification, data.institution, data.boardUniversity || null, data.schoolName || null, data.course || null, data.specialization || null, data.yearOfPassing, data.percentage,
+            JSON.stringify(data.languagesFluent || []), JSON.stringify(data.skills || []), JSON.stringify(data.technicalSkills || []), JSON.stringify(data.nonTechnicalSkills || []), JSON.stringify(data.skillProficiencies || {}),
+            data.experienceType, data.yearsOfExperience || null, data.employmentStatus || null, data.currentRole || null, data.currentCompany || null,
+            data.resumeFileName, data.profilePhoto || null, data.backgroundImage || null, JSON.stringify(data.opportunities || []), data.aspirantType || null,
+            JSON.stringify(data.preferredSectors || []), JSON.stringify(data.preferredRoles || []), JSON.stringify(data.preferredLocations || []), data.willing_to_relocate || false, data.preferredJobType || null, data.expectedSalary || null, data.uniqueId
         ]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false }); }
+        res.json({ success: true, message: "Profile updated successfully" });
+    } catch (e) { 
+        console.error("Profile PUT error:", e);
+        res.status(500).json({ success: false, message: e.message }); 
+    }
 });
 
 // --- WITHDRAW APPLICATION ---
