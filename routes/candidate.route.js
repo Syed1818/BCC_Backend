@@ -223,8 +223,9 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id;
         }
 
+        // ADDED: e.status as event_status
         const jobsQuery = `
-            SELECT j.*, e.name as event_name,
+            SELECT j.*, e.name as event_name, e.status as event_status,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
@@ -265,6 +266,7 @@ router.get('/:id/jobs', async (req, res) => {
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
                 event_name: job.event_name,
+                event_status: job.event_status, // ADDED THIS MAPPING
                 hasApplied: job.has_applied,
                 status: job.application_status || job.status,
                 matchScore: 85,
