@@ -5,19 +5,36 @@ const pool = require('../config/db');
 // --- SAVED JOBS ---
 router.get('/:id/saved-jobs', async (req, res) => {
     try {
-        const candCheck = await pool.query("SELECT id, unique_id FROM candidates WHERE unique_id = $1 OR id::text = $1", [req.params.id]);
+        const candidateStringId = req.params.id;
+        const candCheck = await pool.query("SELECT id, unique_id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
 
         const candidateDbId = candCheck.rows[0].id;
+        
+        // 🚨 STRICT BLOCKLIST APPLIED TO SAVED JOBS + FETCHING APPLICATION STATUS 🚨
         const result = await pool.query(`
-            SELECT sj.id as saved_id, sj.status, sj.updated_at, j.id as job_id, j.title, j.company_name, j.location, j.job_type, j.salary_range, j.qualification_required
+            SELECT 
+                sj.id as saved_id, sj.status as save_status, sj.updated_at, 
+                j.id as job_id, j.title, j.company_name as company, j.location, j.job_type as type, j.salary_range as salary, j.qualification_required as qualification,
+                j.status as job_status, e.status as event_status, e.name as event_name, j.employer_id,
+                CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied
             FROM candidate_saved_jobs sj
             JOIN jobs j ON sj.job_id = j.id
-            WHERE sj.candidate_id = $1
+            LEFT JOIN events e ON j.event_id = e.id
+            LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
+            WHERE sj.candidate_id = $2
+              AND (j.status IS NULL OR TRIM(LOWER(j.status)) NOT IN ('closed', 'inactive', 'deleted', 'filled', 'expired'))
+              AND (e.id IS NULL OR e.status IS NULL OR TRIM(LOWER(e.status)) NOT IN ('completed', 'closed', 'past', 'ended'))
             ORDER BY sj.updated_at DESC
-        `, [candidateDbId]);
+        `, [candidateStringId, candidateDbId]);
 
-        res.json({ success: true, data: result.rows });
+        // Map it to match the expected frontend format
+        const formattedJobs = result.rows.map(job => ({
+            ...job,
+            id: job.job_id // Ensure the ID matches the actual job ID for applying
+        }));
+
+        res.json({ success: true, data: formattedJobs });
     } catch (error) {
         console.error("❌ Error fetching saved jobs:", error);
         res.status(500).json({ success: false, message: "Database error fetching saved jobs: " + error.message });
@@ -246,14 +263,10 @@ router.get('/:id/jobs', async (req, res) => {
 
         let processedJobs = [];
         
-        // 🚨 BULLETPROOF JAVASCRIPT BLOCKLIST 🚨
         for (let job of jobs) {
-            // Regex to rip out EVERY hidden space, newline, or weird formatting
-            // Turns " Closed\r\n" strictly into "closed"
             const rawJStat = (job.job_status || job.status || '').toLowerCase().replace(/[^a-z]/g, '');
             const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
 
-            // If the stripped status matches any of these, physically DELETE it from the candidate's view!
             if (['closed', 'inactive', 'deleted', 'filled', 'expired'].includes(rawJStat)) continue;
             if (['completed', 'closed', 'past', 'ended'].includes(rawEStat)) continue;
 
