@@ -285,11 +285,6 @@ router.delete('/stalls/:id', async (req, res) => {
     }
 });
 
-
-// =====================================================================
-// --- FIXED: STALL APPLICATIONS (ACCEPTS HYPHEN & UNDERSCORE) ---
-// =====================================================================
-
 // GET: List all stall applications
 router.get(['/stall-applications', '/stall_applications'], async (req, res) => {
     try {
@@ -418,7 +413,6 @@ router.put('/employers/:dbId/status', async (req, res) => {
     }
 });
 
-// --- CANDIDATE MODERATION & MANAGEMENT ---
 router.get('/candidates', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -590,198 +584,36 @@ router.get('/events/:id/export', async (req, res) => {
     }
 });
 
-// --- ADMIN TEAM & IAM MANAGEMENT ---
-router.post('/team', async (req, res) => {
-    const { fullName, email, password, role, permissions } = req.body;
-    if (!fullName || !email || !password || !role) {
-        return res.status(400).json({ success: false, message: "Missing required fields." });
-    }
-    if (role === 'Admin') {
-        return res.status(400).json({ success: false, message: "The Master Admin role is exclusive to the BCC CEO and cannot be assigned." });
-    }
+// ==========================================
+// EVENT CANDIDATES REPORT (NEW)
+// ==========================================
+router.get('/events/:eventId/candidates-report', async (req, res) => {
+    const { eventId } = req.params;
     try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const result = await pool.query(
-            `INSERT INTO admin_team (full_name, email, password, role, permissions, created_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
-             RETURNING id, full_name, email, role`,
-            [fullName.trim(), email.trim().toLowerCase(), hashedPassword, role, JSON.stringify(permissions || {})]
-        );
-
-        res.status(201).json({ success: true, message: "Admin team member created successfully.", data: result.rows[0] });
-    } catch (error) {
-        console.error("❌ Error adding admin team member:", error);
-        res.status(500).json({ success: false, message: "Server error saving team member." });
-    }
-});
-
-router.get('/team', async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, full_name as name, email, role, created_at FROM admin_team ORDER BY created_at DESC");
+        const query = `
+            SELECT 
+                c.unique_id, c.full_name as name, c.email, c.phone, c.highest_qualification as qual, c.district,
+                COALESCE(ecr.attendance_status, 'Pending') as attendance,
+                (SELECT COUNT(*) FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id) AND j.event_id::text = $1) as total_applications,
+                (SELECT COUNT(*) FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id) AND j.event_id::text = $1 AND ja.status ILIKE '%interview%') as interviews,
+                EXISTS(SELECT 1 FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id) AND j.event_id::text = $1 AND ja.status ILIKE '%hired%') as is_hired,
+                ARRAY(
+                    SELECT DISTINCT COALESCE(j.company_name, emp.company_name)
+                    FROM job_applications ja
+                    JOIN jobs j ON ja.job_id = j.id
+                    LEFT JOIN employers emp ON j.employer_id = emp.id
+                    WHERE (ja.candidate_id::text = c.id::text OR ja.candidate_id::text = c.unique_id) AND j.event_id::text = $1
+                ) as companies_applied
+            FROM event_candidate_registrations ecr
+            JOIN candidates c ON (ecr.candidate_id::text = c.id::text OR ecr.candidate_id::text = c.unique_id)
+            WHERE ecr.event_id::text = $1
+            ORDER BY c.created_at DESC
+        `;
+        const result = await pool.query(query, [eventId]);
         res.json({ success: true, data: result.rows });
     } catch (error) {
-        console.error("❌ Error fetching admin team:", error);
-        res.status(500).json({ success: false, message: "Server error fetching team members." });
-    }
-});
-
-router.delete('/team/:id', async (req, res) => {
-    const { id } = req.params;
-    try {
-        await pool.query("DELETE FROM admin_team WHERE id = $1", [id]);
-        res.json({ success: true, message: "Team member deleted successfully." });
-    } catch (error) {
-        console.error("❌ Error deleting team member:", error);
-        res.status(500).json({ success: false, message: "Server error deleting member." });
-    }
-});
-
-// --- INTERVIEW MANAGEMENT DASHBOARD ---
-router.get('/interviews/dashboard', async (req, res) => {
-    try {
-        const liveEventsRes = await pool.query("SELECT id FROM events WHERE status = 'live'");
-        const liveEventIds = liveEventsRes.rows.map(e => e.id);
-        
-        if (liveEventIds.length === 0) {
-            return res.json({ 
-                success: true, 
-                data: { activeStalls: 0, scheduled: 0, avgWaitTime: 0, stalls: [], activities: [] }
-            });
-        }
-
-        const stallsQuery = `
-            SELECT 
-                s.code as stall_code,
-                emp.company_name,
-                COUNT(q.id) FILTER (WHERE q.status = 'waiting') as waiting,
-                COUNT(q.id) FILTER (WHERE q.status = 'completed') as completed,
-                MAX(q.called_at) as last_called
-            FROM venue_stalls s
-            JOIN employers emp ON s.employer_id = emp.id
-            LEFT JOIN jobs j ON j.employer_id = emp.id AND j.event_id = s.event_id
-            LEFT JOIN event_queues q ON q.job_id = j.id AND CAST(q.created_at AS DATE) = CURRENT_DATE
-            WHERE s.event_id = ANY($1)
-            GROUP BY s.code, emp.company_name
-            ORDER BY s.code ASC
-        `;
-        const stallsRes = await pool.query(stallsQuery, [liveEventIds]);
-
-        let totalWaiting = 0;
-        let totalCompleted = 0;
-        stallsRes.rows.forEach(s => {
-            totalWaiting += parseInt(s.waiting || 0);
-            totalCompleted += parseInt(s.completed || 0);
-        });
-
-        const avgWaitQuery = `
-            SELECT COALESCE(EXTRACT(EPOCH FROM AVG(called_at - created_at))/60, 12) as avg_min 
-            FROM event_queues 
-            WHERE event_id = ANY($1) AND status IN ('called', 'completed') AND DATE(created_at) = CURRENT_DATE
-        `;
-        const avgWaitRes = await pool.query(avgWaitQuery, [liveEventIds]);
-        const avgWaitTime = Math.round(avgWaitRes.rows[0].avg_min);
-
-        const activityQuery = `
-            SELECT 
-                emp.company_name,
-                ja.status as action,
-                ja.applied_at as time
-            FROM job_applications ja
-            JOIN jobs j ON ja.job_id = j.id
-            JOIN employers emp ON ja.employer_id = emp.id
-            WHERE j.event_id = ANY($1)
-              AND ja.status IN ('shortlisted', 'interviewed', 'hired')
-            ORDER BY ja.applied_at DESC
-            LIMIT 10
-        `;
-        const activityRes = await pool.query(activityQuery, [liveEventIds]);
-
-        res.json({
-            success: true,
-            data: {
-                activeStalls: stallsRes.rows.length,
-                scheduled: totalWaiting + totalCompleted,
-                avgWaitTime: avgWaitTime,
-                stalls: stallsRes.rows,
-                activities: activityRes.rows
-            }
-        });
-
-    } catch (error) {
-        console.error("❌ Error fetching interview dashboard:", error);
-        res.status(500).json({ success: false, message: "Server error fetching interview data." });
-    }
-});
-
-// ==========================================
-// MOBILE QR CHECK-IN FLOW
-// ==========================================
-
-router.post('/qr/request-otp', async (req, res) => {
-    const { email, phone, role } = req.body;
-    try {
-        if (role === 'candidate') {
-            const result = await pool.query("SELECT id FROM candidates WHERE email = $1 AND phone = $2", [email, phone]);
-            if (result.rows.length === 0) {
-                return res.status(404).json({ success: false, message: "No candidate found with these details. Please register first." });
-            }
-        }
-        res.json({ success: true, message: "OTP sent successfully! (Use 1234 for testing)" });
-    } catch (error) {
-        console.error("OTP Request Error:", error);
-        res.status(500).json({ success: false, message: "Server error generating OTP." });
-    }
-});
-
-router.post('/qr/verify-otp', async (req, res) => {
-    const { email, phone, otp, role } = req.body;
-    
-    if (otp !== '1234') {
-        return res.status(400).json({ success: false, message: "Invalid OTP. Please try again." });
-    }
-
-    try {
-        if (role === 'candidate') {
-            const result = await pool.query(
-                "SELECT unique_id as id, full_name as name, email, phone, highest_qualification as qual FROM candidates WHERE email = $1 AND phone = $2", 
-                [email, phone]
-            );
-            return res.json({ success: true, data: result.rows[0] });
-        } else {
-            return res.status(400).json({ success: false, message: "Employer/Exhibitor flow not fully configured yet." });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, message: "Server error verifying OTP." });
-    }
-});
-
-router.post('/qr/mark-attendance', async (req, res) => {
-    const { eventId, userId, role } = req.body;
-    try {
-        let dbUserId;
-        if (role === 'candidate') {
-            const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1", [userId]);
-            if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
-            dbUserId = candCheck.rows[0].id;
-        }
-
-        const dup = await pool.query("SELECT id FROM event_attendance WHERE event_id = $1 AND user_id = $2 AND user_type = $3", [eventId, dbUserId, role]);
-        if (dup.rows.length > 0) {
-            return res.json({ success: true, message: "Attendance is already marked for this event!" });
-        }
-
-        await pool.query("INSERT INTO event_attendance (event_id, user_id, user_type, checked_in_at) VALUES ($1, $2, $3, NOW())", [eventId, dbUserId, role]);
-        
-        if (role === 'candidate') {
-            await pool.query("UPDATE event_candidate_registrations SET attendance_status = 'Present' WHERE event_id = $1 AND candidate_id = $2", [eventId, dbUserId]);
-        }
-
-        res.json({ success: true, message: "Attendance marked successfully!" });
-    } catch (error) {
-        console.error("Mark Attendance Error:", error);
-        res.status(500).json({ success: false, message: "Failed to mark attendance." });
+        console.error("❌ Error fetching event candidates report:", error);
+        res.status(500).json({ success: false, message: "Server error fetching report." });
     }
 });
 
