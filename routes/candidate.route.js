@@ -536,5 +536,36 @@ router.post('/feedback', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error submitting feedback: " + error.message });
     }
 });
+// --- CANDIDATE NOTIFICATIONS ROUTES ---
+router.get('/:id/notifications', async (req, res) => {
+    try {
+        const candidateStringId = req.params.id;
+        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
+        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
+        const candidateDbId = candCheck.rows[0].id;
 
+        const result = await pool.query(`
+            SELECT id, title, message, type, is_read, created_at 
+            FROM notifications 
+            WHERE recipient_id = $1 OR recipient_type = 'all_candidates' OR recipient_type = 'all'
+            ORDER BY created_at DESC
+        `, [candidateDbId]);
+
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Error fetching candidate notifications:", error.message);
+        res.status(500).json({ success: false, message: "Server error fetching notifications." });
+    }
+});
+
+router.post('/notifications/:id/read', async (req, res) => {
+    try {
+        const notifId = req.params.id;
+        await pool.query("UPDATE notifications SET is_read = true WHERE id = $1", [notifId]);
+        res.json({ success: true, message: "Notification marked as read." });
+    } catch (error) {
+        console.error("❌ Error updating notification:", error.message);
+        res.status(500).json({ success: false, message: "Failed to update notification." });
+    }
+});
 module.exports = router;
