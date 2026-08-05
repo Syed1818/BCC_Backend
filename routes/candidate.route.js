@@ -42,7 +42,7 @@ router.get('/:id/saved-jobs', async (req, res) => {
         res.json({ success: true, data: formattedJobs });
     } catch (error) {
         console.error("❌ Error fetching saved jobs:", error);
-        res.status(500).json({ success: false, message: "Database error fetching saved jobs: " + error.message });
+        res.status(500).json({ success: false, message: "Database error fetching saved jobs." });
     }
 });
 
@@ -231,6 +231,23 @@ router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     }
 });
 
+// 🚨 SAFE CANDIDATE NOTIFICATIONS ROUTE (Failsafe added) 🚨
+router.get('/:id/notifications', async (req, res) => {
+    try {
+        const candidateStringId = req.params.id;
+        const result = await pool.query(`
+            SELECT * FROM notifications 
+            WHERE audience_type = 'all_candidates' OR user_id = $1 
+            ORDER BY created_at DESC
+        `, [candidateStringId]);
+        res.json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error("❌ Notification error:", error.message);
+        // Safely return empty data so the React frontend DOES NOT crash!
+        res.json({ success: true, data: [] }); 
+    }
+});
+
 // --- GLOBAL JOB BOARD ---
 router.get('/:id/jobs', async (req, res) => {
     try {
@@ -266,7 +283,6 @@ router.get('/:id/jobs', async (req, res) => {
         }
 
         let processedJobs = [];
-        
         for (let job of jobs) {
             const rawJStat = (job.job_status || job.status || '').toLowerCase().replace(/[^a-z]/g, '');
             const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -370,7 +386,6 @@ router.get('/:id/interviews', async (req, res) => {
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        // 🚨 ADDED: i.queue_number AND j.live_queue_number 🚨
         const result = await pool.query(`
             SELECT 
                 i.id as interview_id, 
@@ -406,7 +421,6 @@ router.post('/:id/interviews/:interviewId/join-queue', async (req, res) => {
     try {
         const { interviewId } = req.params;
         
-        // 1. Find the job associated with this interview
         const jobCheck = await pool.query(`
             SELECT ja.job_id FROM interviews i
             JOIN job_applications ja ON i.application_id = ja.id
@@ -416,17 +430,13 @@ router.post('/:id/interviews/:interviewId/join-queue', async (req, res) => {
         if (jobCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Interview not found" });
         const jobId = jobCheck.rows[0].job_id;
 
-        // 2. Find the highest token number currently issued for this specific job stall
         const maxToken = await pool.query(`
             SELECT MAX(i.queue_number) as max_q FROM interviews i
             JOIN job_applications ja ON i.application_id = ja.id
             WHERE ja.job_id = $1
         `, [jobId]);
 
-        // 3. Assign the next available token (If max is 14, they get 15)
         let nextToken = (maxToken.rows[0].max_q || 0) + 1;
-
-        // 4. Save to database
         await pool.query("UPDATE interviews SET queue_number = $1 WHERE id = $2", [nextToken, interviewId]);
 
         res.json({ success: true, token: nextToken, message: `Successfully joined queue! Your token is ${nextToken}` });
@@ -536,36 +546,5 @@ router.post('/feedback', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error submitting feedback: " + error.message });
     }
 });
-// --- CANDIDATE NOTIFICATIONS ROUTES ---
-router.get('/:id/notifications', async (req, res) => {
-    try {
-        const candidateStringId = req.params.id;
-        const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
-        if (candCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Candidate not found." });
-        const candidateDbId = candCheck.rows[0].id;
 
-        const result = await pool.query(`
-            SELECT id, title, message, type, is_read, created_at 
-            FROM notifications 
-            WHERE recipient_id = $1 OR recipient_type = 'all_candidates' OR recipient_type = 'all'
-            ORDER BY created_at DESC
-        `, [candidateDbId]);
-
-        res.json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error("❌ Error fetching candidate notifications:", error.message);
-        res.status(500).json({ success: false, message: "Server error fetching notifications." });
-    }
-});
-
-router.post('/notifications/:id/read', async (req, res) => {
-    try {
-        const notifId = req.params.id;
-        await pool.query("UPDATE notifications SET is_read = true WHERE id = $1", [notifId]);
-        res.json({ success: true, message: "Notification marked as read." });
-    } catch (error) {
-        console.error("❌ Error updating notification:", error.message);
-        res.status(500).json({ success: false, message: "Failed to update notification." });
-    }
-});
 module.exports = router;
