@@ -272,7 +272,6 @@ router.post('/events/:eventId/venue/stalls', async (req, res) => {
         const eId = parseInt(eventId, 10);
         const bId = parseInt(blockId, 10);
         
-        // Safely parse Room ID (handles 'undefined', 'null', empty strings)
         let rId = null;
         if (roomId && roomId !== 'null' && roomId !== 'undefined') {
             rId = parseInt(roomId, 10);
@@ -701,7 +700,6 @@ router.get('/events/:eventId/candidates-report', async (req, res) => {
 router.get('/events/:eventId/interviews-report', async (req, res) => {
     const { eventId } = req.params;
     try {
-        // 1. Stall-wise aggregated interview statistics
         const stallQuery = `
             SELECT 
                 s.id as stall_id,
@@ -724,7 +722,6 @@ router.get('/events/:eventId/interviews-report', async (req, res) => {
         `;
         const stallRes = await pool.query(stallQuery, [eventId]);
 
-        // 2. Detailed candidate interview log list
         const logsQuery = `
             SELECT 
                 ja.id as application_id,
@@ -828,8 +825,6 @@ router.patch('/feedback/:id/status', async (req, res) => {
 // ==========================================
 // NOTIFICATIONS & COMMUNICATION SYSTEM
 // ==========================================
-
-// GET: Fetch compact lists of users for the Notification Dropdowns
 router.get('/users-list', async (req, res) => {
     try {
         const candidatesRes = await pool.query(`SELECT unique_id as id, full_name as name FROM candidates ORDER BY full_name ASC`);
@@ -848,7 +843,6 @@ router.get('/users-list', async (req, res) => {
     }
 });
 
-// POST: Send/Queue a broadcast message
 router.post('/notifications/send', async (req, res) => {
     const { channels, audience, specificUserId, subject, message } = req.body;
 
@@ -858,7 +852,6 @@ router.post('/notifications/send', async (req, res) => {
     try {
         let recipientCount = 0;
 
-        // 1. Process Portal Notifications (Actually inserts into DB)
         if (channels.includes('portal')) {
             await pool.query(
                 `INSERT INTO notifications (audience_type, user_id, subject, message, channels) 
@@ -866,7 +859,6 @@ router.post('/notifications/send', async (req, res) => {
                 [audience, specificUserId || null, subject, message, channels]
             );
             
-            // Just for a realistic response message, count approx how many people get it
             if (audience === 'all_candidates') {
                 const c = await pool.query('SELECT COUNT(*) FROM candidates');
                 recipientCount = parseInt(c.rows[0].count);
@@ -877,11 +869,9 @@ router.post('/notifications/send', async (req, res) => {
                 recipientCount = 1; 
             }
         } else {
-            // If only SMS/Email are selected (Mock functionality for now as requested)
-            recipientCount = audience.includes('specific') ? 1 : 250; // Mock count
+            recipientCount = audience.includes('specific') ? 1 : 250;
         }
 
-        // Generate dynamic success message based on channels used
         const channelNames = channels.map(c => c.charAt(0).toUpperCase() + c.slice(1)).join(', ');
         const successMsg = `Successfully queued ${channelNames} broadcast for ${recipientCount} recipient(s).`;
 
@@ -918,7 +908,7 @@ router.get('/exhibitors', async (req, res) => {
 
 router.put('/exhibitors/:dbId/status', async (req, res) => {
     const { dbId } = req.params;
-    const { status } = req.body; // 'approved' or 'rejected'
+    const { status } = req.body;
     try {
         const result = await pool.query(
             `UPDATE exhibitors SET status = $1 WHERE id = $2 RETURNING id, company_name as name, status`,
