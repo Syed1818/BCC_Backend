@@ -310,27 +310,27 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS (UPDATED TO FETCH JOB & EVENT STATUS) ---
+// --- APPLICATIONS (NOW SENDING JOB STATUS SO FRONTEND CAN GRAY OUT) ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        // 🚨 ADDED j.status AND e.status SO FRONTEND KNOWS IF IT'S CLOSED 🚨
+        // 🚨 ADDED j.status as job_status AND e.status as event_status 🚨
         const result = await pool.query(`
             SELECT 
                 ja.id as application_id, 
                 j.title as job_title, 
                 j.company_name as company, 
-                j.status as job_status,
+                j.status as job_status, 
                 ja.applied_at, 
                 COALESCE(ja.status, 'Applied') as status, 
                 j.employer_id, 
                 j.id as job_id, 
                 CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
                 e.name as event_name,
-                e.status as event_status,
+                e.status as event_status, 
                 e.event_date,
                 e.venue_address,
                 e.city,
