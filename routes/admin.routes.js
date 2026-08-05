@@ -5,7 +5,7 @@ const bcrypt = require('bcrypt');
 
 // --- STALL ALLOCATION & CANDIDATE FEEDBACK ---
 router.put('/stalls/:id/allocate', async (req, res) => {
-    const stallId = req.params.id;
+    const stallId = parseInt(req.params.id, 10);
     const { eventId, employerId, stallCode } = req.body;
     try {
         await pool.query(
@@ -23,7 +23,6 @@ router.put('/stalls/:id/allocate', async (req, res) => {
     }
 });
 
-// RENAMED: GET /api/admin/candidate-feedback - Fetches feedback submitted by candidates
 router.get('/candidate-feedback', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -215,6 +214,7 @@ router.get('/events/:eventId/venue', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// 🚨 BUG FIX: Bulletproof Integer Casting for Block Creation 🚨
 router.post('/events/:eventId/venue/blocks', async (req, res) => {
     const { eventId } = req.params;
     const { kind, name, code } = req.body;
@@ -224,38 +224,42 @@ router.post('/events/:eventId/venue/blocks', async (req, res) => {
     }
 
     try {
+        const eId = parseInt(eventId, 10);
         const result = await pool.query(
             `INSERT INTO venue_blocks (event_id, type, name, code) 
              VALUES ($1, $2, $3, $4) 
              RETURNING id, type as kind, name, code`,
-            [eventId, kind || 'Block', name.trim(), code.trim().toUpperCase()]
+            [eId, kind || 'Block', name.trim(), code.trim().toUpperCase()]
         );
         res.status(201).json({ success: true, message: "Venue block created successfully!", data: result.rows[0] });
     } catch (error) {
-        console.error("❌ Error creating venue block:", error);
+        console.error("❌ Error creating venue block:", error.message);
         res.status(500).json({ success: false, message: "Database error creating block: " + error.message });
     }
 });
 
+// 🚨 BUG FIX: Bulletproof Integer Casting for Room Creation 🚨
 router.post('/events/:eventId/venue/rooms', async (req, res) => {
     const { blockId, name, code } = req.body;
     if (!blockId || !name || !code) {
         return res.status(400).json({ success: false, message: "Block ID, Room Name, and Code are required." });
     }
     try {
+        const bId = parseInt(blockId, 10);
         const result = await pool.query(
             `INSERT INTO venue_rooms (block_id, name, code) 
              VALUES ($1, $2, $3) 
              RETURNING id, name, code`,
-            [blockId, name.trim(), code.trim().toUpperCase()]
+            [bId, name.trim(), code.trim().toUpperCase()]
         );
         res.status(201).json({ success: true, message: "Venue room/section created successfully!", data: result.rows[0] });
     } catch (error) {
-        console.error("❌ Error creating venue room:", error);
+        console.error("❌ Error creating venue room:", error.message);
         res.status(500).json({ success: false, message: "Database error creating room: " + error.message });
     }
 });
 
+// 🚨 BUG FIX: Bulletproof Integer Casting for Stall Creation (Prevents 500 Error) 🚨
 router.post('/events/:eventId/venue/stalls', async (req, res) => {
     const { eventId } = req.params;
     const { blockId, roomId, code } = req.body;
@@ -265,10 +269,21 @@ router.post('/events/:eventId/venue/stalls', async (req, res) => {
     }
 
     try {
+        const eId = parseInt(eventId, 10);
+        const bId = parseInt(blockId, 10);
+        
+        // Safely parse Room ID (handles 'undefined', 'null', empty strings)
+        let rId = null;
+        if (roomId && roomId !== 'null' && roomId !== 'undefined') {
+            rId = parseInt(roomId, 10);
+            if (isNaN(rId)) rId = null; 
+        }
+
         const duplicate = await pool.query(
             "SELECT id FROM venue_stalls WHERE event_id = $1 AND UPPER(code) = $2",
-            [eventId, code.trim().toUpperCase()]
+            [eId, code.trim().toUpperCase()]
         );
+        
         if (duplicate.rows.length > 0) {
             return res.status(400).json({ success: false, message: `Stall code "${code}" already exists for this event.` });
         }
@@ -277,18 +292,19 @@ router.post('/events/:eventId/venue/stalls', async (req, res) => {
             `INSERT INTO venue_stalls (event_id, block_id, room_id, code, employer_id) 
              VALUES ($1, $2, $3, $4, NULL) 
              RETURNING id, code`,
-            [eventId, blockId, roomId || null, code.trim().toUpperCase()]
+            [eId, bId, rId, code.trim().toUpperCase()]
         );
         res.status(201).json({ success: true, message: "Stall created successfully!", data: result.rows[0] });
     } catch (error) {
-        console.error("❌ Error creating stall:", error);
+        console.error("❌ Error creating stall:", error.message);
         res.status(500).json({ success: false, message: "Database error creating stall: " + error.message });
     }
 });
 
 router.delete('/stalls/:id', async (req, res) => {
     try {
-        await pool.query("DELETE FROM venue_stalls WHERE id = $1", [req.params.id]);
+        const stallId = parseInt(req.params.id, 10);
+        await pool.query("DELETE FROM venue_stalls WHERE id = $1", [stallId]);
         res.json({ success: true, message: "Stall deleted successfully!" });
     } catch (error) {
         console.error("❌ Error deleting stall:", error);
@@ -918,7 +934,5 @@ router.put('/exhibitors/:dbId/status', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating exhibitor status." });
     }
 });
-
-
 
 module.exports = router;
