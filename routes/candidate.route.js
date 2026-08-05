@@ -310,14 +310,13 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS (NOW SENDING JOB STATUS SO FRONTEND CAN GRAY OUT) ---
+// --- APPLICATIONS ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
-        // 🚨 ADDED j.status as job_status AND e.status as event_status 🚨
         const result = await pool.query(`
             SELECT 
                 ja.id as application_id, 
@@ -364,33 +363,34 @@ router.get('/:id/events', async (req, res) => {
     } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// --- INTERVIEWS ---
+// --- INTERVIEWS & QUEUE ---
 router.get('/:id/interviews', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
+        // 🚨 ADDED: i.queue_number AND j.live_queue_number 🚨
         const result = await pool.query(`
             SELECT 
                 i.id as interview_id, 
                 i.interview_type, 
                 i.interview_date, 
                 i.interview_time, 
-                i.location_or_link, 
+                i.location_or_link,
+                i.queue_number,
+                j.live_queue_number as live_token,
                 COALESCE(i.status, 'Scheduled') as interview_status, 
                 ja.id as application_id, 
                 j.title as job_title, 
                 j.company_name,
                 e.name as event_name,
                 e.venue_address,
-                e.city,
-                r.queue_token as token_number
+                e.city
             FROM interviews i 
             JOIN job_applications ja ON i.application_id = ja.id 
             JOIN jobs j ON ja.job_id = j.id 
             LEFT JOIN events e ON j.event_id = e.id
-            LEFT JOIN event_candidate_registrations r ON j.event_id = r.event_id AND (r.candidate_id::text = $1 OR r.candidate_id::text = $2)
             WHERE (ja.candidate_id::text = $1 OR ja.candidate_id::text = $2) 
             ORDER BY i.interview_date ASC, i.interview_time ASC
         `, [candidateStringId, candidateIntId.toString()]);
@@ -399,6 +399,40 @@ router.get('/:id/interviews', async (req, res) => {
     } catch (error) {
         console.error("❌ Error fetching interviews:", error.message);
         res.status(500).json({ success: false, message: "Server error fetching interviews." });
+    }
+});
+
+router.post('/:id/interviews/:interviewId/join-queue', async (req, res) => {
+    try {
+        const { interviewId } = req.params;
+        
+        // 1. Find the job associated with this interview
+        const jobCheck = await pool.query(`
+            SELECT ja.job_id FROM interviews i
+            JOIN job_applications ja ON i.application_id = ja.id
+            WHERE i.id = $1
+        `, [interviewId]);
+
+        if (jobCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Interview not found" });
+        const jobId = jobCheck.rows[0].job_id;
+
+        // 2. Find the highest token number currently issued for this specific job stall
+        const maxToken = await pool.query(`
+            SELECT MAX(i.queue_number) as max_q FROM interviews i
+            JOIN job_applications ja ON i.application_id = ja.id
+            WHERE ja.job_id = $1
+        `, [jobId]);
+
+        // 3. Assign the next available token (If max is 14, they get 15)
+        let nextToken = (maxToken.rows[0].max_q || 0) + 1;
+
+        // 4. Save to database
+        await pool.query("UPDATE interviews SET queue_number = $1 WHERE id = $2", [nextToken, interviewId]);
+
+        res.json({ success: true, token: nextToken, message: `Successfully joined queue! Your token is ${nextToken}` });
+    } catch (error) {
+        console.error("❌ Queue error:", error);
+        res.status(500).json({ success: false, message: "Failed to join queue." });
     }
 });
 
