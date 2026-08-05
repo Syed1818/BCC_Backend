@@ -28,8 +28,9 @@ router.get('/dashboard/:id', async (req, res) => {
 // 2. Fetch Exhibitor Profile Details
 router.get('/profile/:id', async (req, res) => {
     try {
+        // 🚨 ADDED: unique_id check and SELECT * to fetch all registered data 🚨
         const result = await pool.query(
-            "SELECT id, company_name, email, phone, website, gst_number, city, state, address, about_us, logo_url, status FROM exhibitors WHERE id = $1", 
+            "SELECT * FROM exhibitors WHERE unique_id = $1 OR id::text = $1", 
             [req.params.id]
         );
         
@@ -46,8 +47,13 @@ router.get('/profile/:id', async (req, res) => {
 
 // 3. Update Exhibitor Profile Details
 router.put('/profile/update', async (req, res) => {
-    const { id, company_name, phone, website, gst_number, city, state, address, about_us, logo_url } = req.body;
+    const { id, unique_id, company_name, phone, website, gst_number, city, state, address, about_us, logo_url } = req.body;
+    
+    // Use the unique_id if the frontend passed it, otherwise fall back to id
+    const lookupId = unique_id || id;
+
     try {
+        // 🚨 ADDED: unique_id OR id::text matching 🚨
         await pool.query(`
             UPDATE exhibitors SET
                 company_name = $1,
@@ -59,8 +65,8 @@ router.put('/profile/update', async (req, res) => {
                 address = $7,
                 about_us = $8,
                 logo_url = $9
-            WHERE id = $10
-        `, [company_name, phone, website, gst_number, city, state, address, about_us, logo_url || null, id]);
+            WHERE unique_id = $10 OR id::text = $10
+        `, [company_name, phone, website, gst_number, city, state, address, about_us, logo_url || null, lookupId]);
 
         res.json({ success: true, message: "Profile details updated successfully!" });
     } catch (error) {
