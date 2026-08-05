@@ -25,13 +25,16 @@ router.get('/dashboard/:id', async (req, res) => {
     }
 });
 
-// 2. Fetch Exhibitor Profile Details
+// 2. Fetch Exhibitor Profile Details (FIXED DATABASE CRASH)
 router.get('/profile/:id', async (req, res) => {
     try {
-        // 🚨 ADDED: unique_id check and SELECT * to fetch all registered data 🚨
+        // Strip any letters just in case the frontend sends "BCC-UMP-EXP-001"
+        const numericId = String(req.params.id).replace(/\D/g, '');
+        const queryId = numericId ? parseInt(numericId, 10) : req.params.id;
+
         const result = await pool.query(
-            "SELECT * FROM exhibitors WHERE unique_id = $1 OR id::text = $1", 
-            [req.params.id]
+            "SELECT * FROM exhibitors WHERE id = $1", 
+            [queryId]
         );
         
         if (result.rows.length === 0) {
@@ -40,20 +43,18 @@ router.get('/profile/:id', async (req, res) => {
         
         res.json({ success: true, data: result.rows[0] });
     } catch (error) {
-        console.error("Error fetching exhibitor profile:", error);
+        console.error("❌ Error fetching exhibitor profile:", error.message);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
 
-// 3. Update Exhibitor Profile Details
+// 3. Update Exhibitor Profile Details (FIXED DATABASE CRASH)
 router.put('/profile/update', async (req, res) => {
-    const { id, unique_id, company_name, phone, website, gst_number, city, state, address, about_us, logo_url } = req.body;
-    
-    // Use the unique_id if the frontend passed it, otherwise fall back to id
-    const lookupId = unique_id || id;
-
+    const { id, company_name, phone, website, gst_number, city, state, address, about_us, logo_url } = req.body;
     try {
-        // 🚨 ADDED: unique_id OR id::text matching 🚨
+        const numericId = String(id).replace(/\D/g, '');
+        const queryId = numericId ? parseInt(numericId, 10) : id;
+
         await pool.query(`
             UPDATE exhibitors SET
                 company_name = $1,
@@ -65,12 +66,12 @@ router.put('/profile/update', async (req, res) => {
                 address = $7,
                 about_us = $8,
                 logo_url = $9
-            WHERE unique_id = $10 OR id::text = $10
-        `, [company_name, phone, website, gst_number, city, state, address, about_us, logo_url || null, lookupId]);
+            WHERE id = $10
+        `, [company_name, phone, website, gst_number, city, state, address, about_us, logo_url || null, queryId]);
 
         res.json({ success: true, message: "Profile details updated successfully!" });
     } catch (error) {
-        console.error("Error updating exhibitor profile:", error);
+        console.error("❌ Error updating exhibitor profile:", error.message);
         res.status(500).json({ success: false, message: "Server error updating profile" });
     }
 });
@@ -262,8 +263,6 @@ router.post('/:exhibitorId/leads/scan', async (req, res) => {
     const { event_id, candidate_id } = req.body;
     
     try {
-        // Mocking candidate data retrieval based on the scanned ID
-        // In production, this would SELECT from your candidates table
         const mockCandidateName = "Scanned Candidate";
         const mockCandidateEmail = "candidate@example.com";
         const mockCandidatePhone = "9876543210";
@@ -336,7 +335,5 @@ router.put('/:exhibitorId/notifications/read-all', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
-
-
 
 module.exports = router;
