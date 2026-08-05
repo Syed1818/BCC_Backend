@@ -11,7 +11,6 @@ router.get('/:id/saved-jobs', async (req, res) => {
 
         const candidateDbId = candCheck.rows[0].id;
         
-        // Fetch all saved jobs first
         const result = await pool.query(`
             SELECT 
                 sj.id as saved_id, sj.status as save_status, sj.updated_at, 
@@ -26,20 +25,17 @@ router.get('/:id/saved-jobs', async (req, res) => {
             ORDER BY sj.updated_at DESC
         `, [candidateStringId, candidateDbId]);
 
-        // 🚨 BULLETPROOF JAVASCRIPT BLOCKLIST APPLIED TO SAVED JOBS 🚨
         const formattedJobs = [];
         for (let job of result.rows) {
-            // Strip out hidden spaces, newlines, and dirty database formatting
             const rawJStat = (job.job_status || '').toLowerCase().replace(/[^a-z]/g, '');
             const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
 
-            // Physically block closed jobs / completed events from showing up in Saved Jobs!
             if (['closed', 'inactive', 'deleted', 'filled', 'expired'].includes(rawJStat)) continue;
             if (['completed', 'closed', 'past', 'ended'].includes(rawEStat)) continue;
 
             formattedJobs.push({
                 ...job,
-                id: job.job_id // Ensure the ID matches the actual job ID for applying
+                id: job.job_id 
             });
         }
 
@@ -212,7 +208,6 @@ router.put('/profile/update', async (req, res) => {
     }
 });
 
-// --- WITHDRAW APPLICATION ---
 router.post('/:id/jobs/:jobId/withdraw', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -315,24 +310,27 @@ router.get('/:id/jobs', async (req, res) => {
     }
 });
 
-// --- APPLICATIONS ---
+// --- APPLICATIONS (UPDATED TO FETCH JOB & EVENT STATUS) ---
 router.get('/:id/applications', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
         const candCheck = await pool.query("SELECT id FROM candidates WHERE unique_id = $1 OR id::text = $1", [candidateStringId]);
         const candidateIntId = candCheck.rows.length > 0 ? candCheck.rows[0].id : 0;
         
+        // 🚨 ADDED j.status AND e.status SO FRONTEND KNOWS IF IT'S CLOSED 🚨
         const result = await pool.query(`
             SELECT 
                 ja.id as application_id, 
                 j.title as job_title, 
                 j.company_name as company, 
+                j.status as job_status,
                 ja.applied_at, 
                 COALESCE(ja.status, 'Applied') as status, 
                 j.employer_id, 
                 j.id as job_id, 
                 CASE WHEN j.event_id::text = '0' THEN NULL ELSE j.event_id END as event_id, 
                 e.name as event_name,
+                e.status as event_status,
                 e.event_date,
                 e.venue_address,
                 e.city,
