@@ -248,7 +248,9 @@ router.get('/:id/notifications', async (req, res) => {
     }
 });
 
-// --- GLOBAL JOB BOARD ---
+// =====================================================================
+// --- GLOBAL JOB BOARD (STRICTLY EVENT TIED) ---
+// =====================================================================
 router.get('/:id/jobs', async (req, res) => {
     try {
         const candidateStringId = req.params.id;
@@ -261,13 +263,16 @@ router.get('/:id/jobs', async (req, res) => {
             candidateIntId = candidateProfile.id;
         }
 
+        // 🚨 STRICT EVENT QUERY: Only pull jobs actively tied to a Live or Upcoming event! 🚨
         const jobsQuery = `
-            SELECT j.*, j.status as job_status, e.name as event_name, e.status as event_status,
+            SELECT j.*, j.status as job_status, e.id as event_id, e.name as event_name, e.status as event_status,
                 CASE WHEN a.id IS NOT NULL THEN true ELSE false END as has_applied,
                 a.status as application_status
             FROM jobs j
-            LEFT JOIN events e ON j.event_id = e.id
+            JOIN events e ON j.event_id = e.id
             LEFT JOIN job_applications a ON j.id = a.job_id AND (a.candidate_id::text = $1 OR a.candidate_id::text = $2)
+            WHERE LOWER(COALESCE(e.status, '')) IN ('live', 'upcoming')
+            AND LOWER(COALESCE(j.status, '')) NOT IN ('closed', 'inactive', 'deleted', 'filled', 'expired', 'pending', 'rejected')
             ORDER BY j.created_at DESC;
         `;
 
@@ -284,12 +289,6 @@ router.get('/:id/jobs', async (req, res) => {
 
         let processedJobs = [];
         for (let job of jobs) {
-            const rawJStat = (job.job_status || job.status || '').toLowerCase().replace(/[^a-z]/g, '');
-            const rawEStat = (job.event_status || '').toLowerCase().replace(/[^a-z]/g, '');
-
-            if (['closed', 'inactive', 'deleted', 'filled', 'expired'].includes(rawJStat)) continue;
-            if (['completed', 'closed', 'past', 'ended'].includes(rawEStat)) continue;
-
             let jobSkills = [];
             try {
                 if (typeof job.skills === 'string') jobSkills = JSON.parse(job.skills);
@@ -308,6 +307,7 @@ router.get('/:id/jobs', async (req, res) => {
                 experience: job.experience_required || job.experience,
                 salary: job.salary_range || job.salary,
                 skills: jobSkills,
+                event_id: job.event_id,
                 event_name: job.event_name,
                 event_status: job.event_status || 'upcoming',
                 job_status: job.job_status || job.status || 'Open',
