@@ -73,7 +73,7 @@ router.post('/candidate/register', async (req, res) => {
 
         const insertQuery = `
             INSERT INTO candidates (
-                unique_id, full_name, email, phone, password, dob, gender, preferred_language, category,
+                unique_id, full_name, email, phone, password, dob, gender, preferred_language, category, special_category, father_name, mother_name,
                 current_address, permanent_address, highest_qualification, year_of_passing, institution, 
                 school_name, course, specialization, percentage_cgpa, languages_fluent, skills, 
                 experience_type, years_of_experience, employment_status, current_job_role, current_company,
@@ -83,14 +83,14 @@ router.post('/candidate/register', async (req, res) => {
                 status, account_status, created_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 
-                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, 
+                $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, 
                 'Pending', 'Verified', NOW()
             ) RETURNING *;
         `;
 
         const values = [
             unique_id, data.fullName, cleanEmail, cleanPhone, hashedPassword, parsedDob, data.gender || null, 
-            data.language || 'English', data.socialCategory || 'General Merit (GM)',
+            data.language || 'English', data.socialCategory || null, data.specialCategory || null, data.fatherName || null, data.motherName || null,
             JSON.stringify(data.currentAddress || {}), JSON.stringify(data.permanentAddress || {}),
             data.qualification || null, data.yearOfPassing || null, data.institution || null, data.schoolName || null,
             data.course || null, data.specialization || null, data.percentage || null,
@@ -110,6 +110,7 @@ router.post('/candidate/register', async (req, res) => {
             const result = await pool.query(insertQuery, values);
             return res.status(201).json({ success: true, message: "Candidate registered successfully", uniqueId: result.rows[0].unique_id });
         } catch (dbError) {
+            console.error("DB Insert Error:", dbError);
             const fallbackQuery = `
                 INSERT INTO candidates (unique_id, full_name, email, phone, password, status, account_status, created_at)
                 VALUES ($1, $2, $3, $4, $5, 'Pending', 'Verified', NOW()) RETURNING *;
@@ -588,7 +589,12 @@ router.get('/candidate/profile/:id', async (req, res) => {
             dob: db.dob ? new Date(db.dob).toISOString().split('T')[0] : "",
             gender: db.gender,
             language: db.preferred_language,
-            category: db.category,
+            
+            // Map categories correctly for frontend component matching
+            socialCategory: db.category,
+            category: db.category, 
+            specialCategory: db.special_category,
+            
             religion: db.religion,
             aadhaar: db.aadhaar_number,
             hasDisability: db.has_disability,
@@ -643,15 +649,16 @@ router.put('/candidate/profile/update', async (req, res) => {
                 course = $23, specialization = $24, year_of_passing = $25, percentage_cgpa = $26,
                 languages_fluent = $27, technical_skills = $28, non_technical_skills = $29, skill_proficiencies = $30,
                 experience_type = $31, opportunities = $32, aspirant_type = $33, preferred_sectors = $34,
-                preferred_roles = $35, preferred_locations = $36, willing_to_relocate = $37, resume_file_name = $38
-            WHERE unique_id = $39
+                preferred_roles = $35, preferred_locations = $36, willing_to_relocate = $37, resume_file_name = $38,
+                special_category = $39
+            WHERE unique_id = $40
         `;
         
         const safeAadhaar = (d.aadhaar && d.aadhaar.length === 12) ? "[Aadhaar Redacted]" : d.aadhaar;
 
         const values = [
             d.fullName, d.fatherName, d.motherName, d.profilePhoto, d.backgroundImage,
-            d.dob || null, d.gender, d.language, d.category, d.religion,
+            d.dob || null, d.gender, d.language, (d.socialCategory || d.category), d.religion,
             safeAadhaar, d.hasDisability, JSON.stringify(d.disabilities || []), d.udid,
             d.linkedinUrl, d.githubUrl, JSON.stringify(d.currentAddress || {}), JSON.stringify(d.permanentAddress || {}),
             d.qualification, d.institution, d.boardUniversity, d.schoolName,
@@ -659,12 +666,13 @@ router.put('/candidate/profile/update', async (req, res) => {
             JSON.stringify(d.languagesFluent || []), JSON.stringify(d.technicalSkills || []), JSON.stringify(d.nonTechnicalSkills || []), JSON.stringify(d.skillProficiencies || {}),
             d.experienceType, JSON.stringify(d.opportunities || []), d.aspirantType, JSON.stringify(d.preferredSectors || []),
             JSON.stringify(d.preferredRoles || []), JSON.stringify(d.preferredLocations || []), Boolean(d.willingToRelocate), d.resumeFileName,
-            d.uniqueId
+            d.specialCategory || null, d.uniqueId
         ];
 
         await pool.query(updateQuery, values);
         res.json({ success: true, message: "Profile updated successfully." });
     } catch (error) {
+        console.error("Profile update error:", error);
         res.status(500).json({ success: false, message: "Server error updating profile." });
     }
 });
@@ -808,7 +816,5 @@ router.post('/exhibitor/register', async (req, res) => {
         res.status(500).json({ success: false, message: "Server error during registration." }); 
     }
 });
-
-
 
 module.exports = router;
