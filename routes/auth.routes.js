@@ -6,6 +6,11 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+// --- AWS SES Integration ---
+const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const sesClient = new SESClient({ region: 'ap-south-1' });
+const otpStore = new Map(); // In-memory OTP storage
+
 const uploadDir = path.join(__dirname, '../uploads/logos');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -31,6 +36,87 @@ const upload = multer({
         } else {
             cb(new Error('Invalid file type. Only JPG, PNG, and PDF are allowed.'));
         }
+    }
+});
+
+// =====================================================================
+// --- OTP EMAIL VERIFICATION (AWS SES) ---
+// =====================================================================
+
+// 1. Send OTP
+router.post('/send-otp', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'Email is required.' });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
+
+        otpStore.set(cleanEmail, { otp, expiresAt });
+
+        const mailParams = {
+            Source: '"Bharat Career Connect" <noreply@nammaudyogamela.com>',
+            Destination: { ToAddresses: [cleanEmail] },
+            Message: {
+                Subject: { Data: 'Your OTP Code — Bharat Career Connect' },
+                Body: {
+                    Html: {
+                        Data: `
+                            <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 500px; border: 1px solid #e0e0e0; border-radius: 8px;">
+                                <h2 style="color: #0b1f3a; text-align: center;">Bharat Career Connect</h2>
+                                <p>Hello,</p>
+                                <p>Your 6-digit verification OTP for registration is:</p>
+                                <div style="background-color: #f4f6f8; padding: 15px; text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 5px; color: #ff9933; border-radius: 6px; margin: 20px 0;">
+                                    ${otp}
+                                </div>
+                                <p>This code is valid for <strong>10 minutes</strong>. Do not share it with anyone.</p>
+                            </div>
+                        `
+                    }
+                }
+            }
+        };
+
+        await sesClient.send(new SendEmailCommand(mailParams));
+        return res.json({ success: true, message: 'OTP sent successfully.' });
+    } catch (error) {
+        console.error('SES Send OTP Error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to send OTP.' });
+    }
+});
+
+// 2. Verify OTP
+router.post('/verify-otp', (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        if (!email || !otp) {
+            return res.status(400).json({ success: false, message: 'Email and OTP are required.' });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+        const record = otpStore.get(cleanEmail);
+
+        if (!record) {
+            return res.status(400).json({ success: false, message: 'OTP expired or not requested.' });
+        }
+
+        if (Date.now() > record.expiresAt) {
+            otpStore.delete(cleanEmail);
+            return res.status(400).json({ success: false, message: 'OTP has expired.' });
+        }
+
+        if (record.otp !== otp.trim()) {
+            return res.status(400).json({ success: false, message: 'Invalid OTP. Please check and try again.' });
+        }
+
+        otpStore.delete(cleanEmail);
+        return res.json({ success: true, message: 'Email verified successfully!' });
+    } catch (error) {
+        console.error('Verify OTP Error:', error);
+        return res.status(500).json({ success: false, message: 'Verification failed.' });
     }
 });
 
