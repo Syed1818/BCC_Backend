@@ -52,6 +52,21 @@ router.post('/send-otp', async (req, res) => {
         }
 
         const cleanEmail = email.toLowerCase().trim();
+
+        // --- NEW DB CHECK: Ensure email isn't already registered ---
+        const userExists = await pool.query(
+            "SELECT id FROM candidates WHERE email IS NOT NULL AND email != '' AND LOWER(email) = $1",
+            [cleanEmail]
+        );
+
+        if (userExists.rows.length > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "This email is already registered. Please log in instead." 
+            });
+        }
+        // -----------------------------------------------------------
+
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
 
