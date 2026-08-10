@@ -780,91 +780,129 @@ router.put('/candidate/profile/update', async (req, res) => {
 
 
 // =====================================================================
-// --- FORGOT & RESET PASSWORD ---
+// --- FORGOT & RESET PASSWORD (NOW WITH AWS SES OTP) ---
 // =====================================================================
 router.post('/forgot-password', async (req, res) => {
     const { identifier, role } = req.body;
-    const rawInput = identifier ? identifier.trim() : "";
-    const digitsOnly = rawInput.replace(/\D/g, "");
-    const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+    const cleanEmail = identifier ? identifier.trim().toLowerCase() : "";
+
+    // Strictly require a valid email format for password resets
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+        return res.status(400).json({ success: false, message: "Please provide a valid registered email address." });
+    }
 
     try {
         let result;
 
-        // Route the forgotten password check to the correct database table based on user role
+        // Route the forgotten password check to the correct database table
         if (role === 'employer') {
-            result = await pool.query("SELECT id FROM employers WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+            result = await pool.query("SELECT id FROM employers WHERE LOWER(TRIM(email)) = $1", [cleanEmail]);
         } else if (role === 'exhibitor') {
-            result = await pool.query("SELECT id FROM exhibitors WHERE LOWER(TRIM(email)) = LOWER($1)", [rawInput]);
+            result = await pool.query("SELECT id FROM exhibitors WHERE LOWER(TRIM(email)) = $1", [cleanEmail]);
         } else {
-            const queryText = `
-                SELECT id FROM candidates 
-                WHERE LOWER(TRIM(email)) = LOWER($1) 
-                   OR LOWER(TRIM(unique_id)) = LOWER($1)
-                   OR TRIM(phone) = $1
-                   OR ($2 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $2)
-            `;
-            result = await pool.query(queryText, [rawInput, last10Digits]);
+            result = await pool.query("SELECT id FROM candidates WHERE LOWER(TRIM(email)) = $1", [cleanEmail]);
         }
 
         if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: "No registered account found with these details." });
+            return res.status(404).json({ success: false, message: "No registered account found with this email." });
         }
 
-        return res.json({ success: true, message: "OTP sent successfully! Use 1234 to verify." });
+        // --- AWS SES OTP GENERATION & SENDING ---
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
+
+        otpStore.set(cleanEmail, { otp, expiresAt });
+
+        const mailParams = {
+            Source: '"Bharat Career Connect" <noreply@nammaudyogamela.com>',
+            Destination: { ToAddresses: [cleanEmail] },
+            Message: {
+                Subject: { Data: 'Password Reset OTP — Bharat Career Connect' },
+                Body: {
+                    Html: {
+                        Data: `
+                            <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 500px; border: 1px solid #e0e0e0; border-radius: 8px;">
+                                <h2 style="color: #0b1f3a; text-align: center;">Bharat Career Connect</h2>
+                                <p>Hello,</p>
+                                <p>We received a request to reset your password. Your 6-digit OTP is:</p>
+                                <div style="background-color: #f4f6f8; padding: 15px; text-align: center; font-size: 28px; font-weight: bold; letter-spacing: 5px; color: #ff9933; border-radius: 6px; margin: 20px 0;">
+                                    ${otp}
+                                </div>
+                                <p>This code is valid for <strong>10 minutes</strong>. If you did not request a password reset, please ignore this email.</p>
+                            </div>
+                        `
+                    }
+                }
+            }
+        };
+
+        await sesClient.send(new SendEmailCommand(mailParams));
+        return res.json({ success: true, message: `6-Digit OTP sent successfully to ${cleanEmail}` });
+
     } catch (err) {
-        return res.status(500).json({ success: false, message: "Server error checking account." });
+        console.error("Forgot Password Error:", err);
+        return res.status(500).json({ success: false, message: "Server error checking account or sending email." });
     }
 });
 
 router.post('/reset-password', async (req, res) => {
     const { identifier, otp, newPassword, role } = req.body;
-    
-    if (otp !== "1234" && otp !== "123456") {
-        return res.status(400).json({ success: false, message: "Invalid OTP code." });
+    const cleanEmail = identifier ? identifier.trim().toLowerCase() : "";
+
+    if (!cleanEmail || !otp || !newPassword) {
+        return res.status(400).json({ success: false, message: "Email, OTP, and new password are required." });
     }
 
-    const rawInput = identifier ? identifier.trim() : "";
-    const digitsOnly = rawInput.replace(/\D/g, "");
-    const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+    // --- VERIFY OTP AGAINST MEMORY STORE ---
+    const record = otpStore.get(cleanEmail);
 
+    if (!record) {
+        return res.status(400).json({ success: false, message: 'OTP expired or not requested.' });
+    }
+
+    if (Date.now() > record.expiresAt) {
+        otpStore.delete(cleanEmail);
+        return res.status(400).json({ success: false, message: 'OTP has expired. Please request a new one.' });
+    }
+
+    if (record.otp !== otp.trim()) {
+        return res.status(400).json({ success: false, message: 'Invalid OTP. Please check and try again.' });
+    }
+
+    // OTP is valid. Now update the password.
     try {
         let result;
+        const salt = await bcrypt.genSalt(10);
+        const hashed = await bcrypt.hash(newPassword, salt);
 
-        // Route the password update to the correct database table based on user role
+        // Route the password update to the correct database table
         if (role === 'employer') {
-            const salt = await bcrypt.genSalt(10);
-            const hashed = await bcrypt.hash(newPassword, salt);
             result = await pool.query(
-                "UPDATE employers SET password_hash = $1, password = $2 WHERE LOWER(TRIM(email)) = LOWER($3) RETURNING id",
-                [hashed, newPassword, rawInput]
+                "UPDATE employers SET password_hash = $1, password = $2 WHERE LOWER(TRIM(email)) = $3 RETURNING id",
+                [hashed, newPassword, cleanEmail]
             );
         } else if (role === 'exhibitor') {
-            const salt = await bcrypt.genSalt(10);
-            const hashed = await bcrypt.hash(newPassword, salt);
             result = await pool.query(
-                "UPDATE exhibitors SET password = $1 WHERE LOWER(TRIM(email)) = LOWER($2) RETURNING id",
-                [hashed, rawInput]
+                "UPDATE exhibitors SET password = $1 WHERE LOWER(TRIM(email)) = $2 RETURNING id",
+                [hashed, cleanEmail]
             );
         } else {
-            const updateQuery = `
-                UPDATE candidates 
-                SET password = $1 
-                WHERE LOWER(TRIM(email)) = LOWER($2) 
-                   OR LOWER(TRIM(unique_id)) = LOWER($2)
-                   OR TRIM(phone) = $2
-                   OR ($3 != '' AND RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = $3)
-                RETURNING unique_id;
-            `;
-            result = await pool.query(updateQuery, [newPassword, rawInput, last10Digits]);
+            result = await pool.query(
+                "UPDATE candidates SET password = $1 WHERE LOWER(TRIM(email)) = $2 RETURNING unique_id",
+                [newPassword, cleanEmail]
+            );
         }
 
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Account update failed. User not found." });
         }
 
+        // Clean up the OTP store after successful reset
+        otpStore.delete(cleanEmail);
+
         return res.json({ success: true, message: "Password updated successfully! You can now log in." });
     } catch (err) {
+        console.error("Reset Password DB Error:", err);
         return res.status(500).json({ success: false, message: "Database error updating password." });
     }
 });
