@@ -338,7 +338,7 @@ router.post('/employer/register', function (req, res, next) {
 
         const result = await pool.query(query, values);
         
-        // --- ID FORMATTING FIX ---
+        // --- 9-DIGIT FORMATTING FIX FOR EMPLOYER REGISTRATION ---
         const employerId = result.rows[0].id;
         const formattedId = String(employerId).padStart(9, '0');
 
@@ -605,10 +605,21 @@ router.post('/login', async (req, res) => {
             let isMatch = employer.password && employer.password.startsWith('$2') ? await bcrypt.compare(password, employer.password) : (password === employer.password || password === employer.password_hash);
             if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
 
-            return res.json({ success: true, data: { id: loggedInId, name: employer.company_name, email: employer.email, role: 'employer', isHr: isHrAccount, hrName: isHrAccount ? employer.full_name : null } });
+            // --- 9-DIGIT FORMATTING FIX FOR EMPLOYER LOGIN ---
+            return res.json({ 
+                success: true, 
+                data: { 
+                    id: `BCC-UMP-EMP-${String(loggedInId).padStart(9, '0')}`, 
+                    dbId: loggedInId, 
+                    name: employer.company_name, 
+                    email: employer.email, 
+                    role: 'employer', 
+                    isHr: isHrAccount, 
+                    hrName: isHrAccount ? employer.full_name : null 
+                } 
+            });
         }
 
-        // --- NEW EXHIBITOR LOGIN FLOW ---
         if (role === 'exhibitor') {
             const cleanInput = rawInput.toLowerCase();
             const cleanCompany = company_name ? company_name.trim().toLowerCase() : "";
@@ -635,9 +646,16 @@ router.post('/login', async (req, res) => {
 
             if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
 
+            // --- 9-DIGIT FORMATTING FIX FOR EXHIBITOR LOGIN ---
             return res.json({ 
                 success: true, 
-                data: { id: exhibitor.id, name: exhibitor.company_name, email: exhibitor.email, role: 'exhibitor' } 
+                data: { 
+                    id: `BCC-UMP-EXH-${String(exhibitor.id).padStart(9, '0')}`, 
+                    dbId: exhibitor.id,
+                    name: exhibitor.company_name, 
+                    email: exhibitor.email, 
+                    role: 'exhibitor' 
+                } 
             });
         }
 
@@ -780,7 +798,7 @@ router.put('/candidate/profile/update', async (req, res) => {
 
 
 // =====================================================================
-// --- FORGOT & RESET PASSWORD (NOW WITH AWS SES OTP) ---
+// --- FORGOT & RESET PASSWORD ---
 // =====================================================================
 router.post('/forgot-password', async (req, res) => {
     const { identifier, role } = req.body;
@@ -942,12 +960,14 @@ router.post('/exhibitor/register', async (req, res) => {
         ];
 
         const result = await pool.query(query, values);
-        const formattedId = String(result.rows[0].id).padStart(3, '0');
+        
+        // --- 9-DIGIT FORMATTING FIX FOR EXHIBITOR REGISTRATION ---
+        const formattedId = String(result.rows[0].id).padStart(9, '0');
 
         res.status(201).json({ 
             success: true, 
             message: "Exhibitor registration submitted successfully! Pending admin approval.",
-            uniqueId: `EXH-${formattedId}` 
+            uniqueId: `BCC-UMP-EXH-${formattedId}` 
         });
 
     } catch (error) { 
