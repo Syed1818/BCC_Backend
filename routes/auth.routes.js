@@ -338,14 +338,18 @@ router.post('/employer/register', function (req, res, next) {
 
         const result = await pool.query(query, values);
         
-        // --- 9-DIGIT FORMATTING FIX FOR EMPLOYER REGISTRATION ---
+        // --- 9-DIGIT FORMATTING AND SAVING TO DATABASE ---
         const employerId = result.rows[0].id;
         const formattedId = String(employerId).padStart(9, '0');
+        const uniqueId = `BCC-UMP-EMP-${formattedId}`;
+
+        // Save the unique_id back into the employers table
+        await pool.query("UPDATE employers SET unique_id = $1 WHERE id = $2", [uniqueId, employerId]);
 
         res.status(201).json({ 
             success: true, 
             message: "Employer registration submitted successfully.",
-            uniqueId: `BCC-UMP-EMP-${formattedId}` 
+            uniqueId: uniqueId 
         });
 
     } catch (error) { 
@@ -374,7 +378,7 @@ router.get('/employer/profile/:id', async (req, res) => {
         const db = result.rows[0];
         const profileData = {
             id: db.id,
-            uniqueId: `BCC-UMP-EMP-${String(db.id).padStart(9, '0')}`,
+            uniqueId: db.unique_id || `BCC-UMP-EMP-${String(db.id).padStart(9, '0')}`,
             company_name: db.company_name,
             email: db.email,
             website: db.website,
@@ -581,7 +585,7 @@ router.post('/login', async (req, res) => {
                 loggedInId = employer.id;
             } else {
                 const hrResult = await pool.query(`
-                    SELECT h.*, e.company_name, e.status as employer_status, e.id as master_employer_id
+                    SELECT h.*, e.company_name, e.status as employer_status, e.id as master_employer_id, e.unique_id as master_unique_id
                     FROM employer_hrs h
                     JOIN employers e ON h.employer_id = e.id
                     WHERE LOWER(TRIM(h.email)) = $1 AND LOWER(TRIM(e.company_name)) = $2
@@ -589,7 +593,7 @@ router.post('/login', async (req, res) => {
 
                 if (hrResult.rows.length > 0) {
                     const hrData = hrResult.rows[0];
-                    employer = { ...hrData, status: hrData.employer_status, password: hrData.password_hash };
+                    employer = { ...hrData, status: hrData.employer_status, password: hrData.password_hash, unique_id: hrData.master_unique_id };
                     loggedInId = hrData.master_employer_id;
                     isHrAccount = true;
                 }
@@ -605,11 +609,10 @@ router.post('/login', async (req, res) => {
             let isMatch = employer.password && employer.password.startsWith('$2') ? await bcrypt.compare(password, employer.password) : (password === employer.password || password === employer.password_hash);
             if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
 
-            // --- 9-DIGIT FORMATTING FIX FOR EMPLOYER LOGIN ---
             return res.json({ 
                 success: true, 
                 data: { 
-                    id: `BCC-UMP-EMP-${String(loggedInId).padStart(9, '0')}`, 
+                    id: employer.unique_id || `BCC-UMP-EMP-${String(loggedInId).padStart(9, '0')}`, 
                     dbId: loggedInId, 
                     name: employer.company_name, 
                     email: employer.email, 
@@ -646,11 +649,10 @@ router.post('/login', async (req, res) => {
 
             if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid Password.' });
 
-            // --- 9-DIGIT FORMATTING FIX FOR EXHIBITOR LOGIN ---
             return res.json({ 
                 success: true, 
                 data: { 
-                    id: `BCC-UMP-EXH-${String(exhibitor.id).padStart(9, '0')}`, 
+                    id: exhibitor.unique_id || `BCC-UMP-EXH-${String(exhibitor.id).padStart(9, '0')}`, 
                     dbId: exhibitor.id,
                     name: exhibitor.company_name, 
                     email: exhibitor.email, 
@@ -961,13 +963,18 @@ router.post('/exhibitor/register', async (req, res) => {
 
         const result = await pool.query(query, values);
         
-        // --- 9-DIGIT FORMATTING FIX FOR EXHIBITOR REGISTRATION ---
-        const formattedId = String(result.rows[0].id).padStart(9, '0');
+        // --- 9-DIGIT FORMATTING AND SAVING TO DATABASE ---
+        const exhibitorId = result.rows[0].id;
+        const formattedId = String(exhibitorId).padStart(9, '0');
+        const uniqueId = `BCC-UMP-EXH-${formattedId}`;
+
+        // Save the unique_id back into the exhibitors table
+        await pool.query("UPDATE exhibitors SET unique_id = $1 WHERE id = $2", [uniqueId, exhibitorId]);
 
         res.status(201).json({ 
             success: true, 
             message: "Exhibitor registration submitted successfully! Pending admin approval.",
-            uniqueId: `BCC-UMP-EXH-${formattedId}` 
+            uniqueId: uniqueId 
         });
 
     } catch (error) { 
