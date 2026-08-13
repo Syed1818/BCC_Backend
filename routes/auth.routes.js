@@ -172,6 +172,9 @@ router.post('/candidate/register', async (req, res) => {
         const random9Digit = Math.floor(Math.random() * (max - min + 1)) + min;
         const unique_id = 'BCC-UMP-CAN-' + random9Digit;
 
+        // COMBINE SOFT SKILLS AND REGULAR SKILLS
+        const allSkills = [...(data.skills || []), ...(data.softSkills || [])];
+
         const insertQuery = `
             INSERT INTO candidates (
                 unique_id, full_name, email, phone, password, dob, gender, preferred_language, category, special_category, father_name, mother_name,
@@ -196,7 +199,7 @@ router.post('/candidate/register', async (req, res) => {
             data.qualification || null, data.yearOfPassing || null, data.institution || null, data.schoolName || null,
             data.course || null, data.specialization || null, data.percentage || null,
             data.languagesFluent, 
-            JSON.stringify(data.skills || []),
+            JSON.stringify(allSkills), // Store combined skills
             data.experienceType || 'Fresher', data.experience || null, data.employmentStatus || null,
             data.currentRole || null, data.currentCompany || null, data.resumeFileName || null,
             JSON.stringify(data.certifications || []), JSON.stringify(data.preferredRoles || []),
@@ -865,6 +868,39 @@ router.post('/forgot-password', async (req, res) => {
     }
 });
 
+// --- NEW ENDPOINT: VERIFY OTP BEFORE RESET ---
+router.post('/verify-reset-otp', (req, res) => {
+    try {
+        const { identifier, otp } = req.body;
+        const cleanEmail = identifier ? identifier.trim().toLowerCase() : "";
+
+        if (!cleanEmail || !otp) {
+            return res.status(400).json({ success: false, message: 'Email and OTP are required.' });
+        }
+
+        const record = otpStore.get(cleanEmail);
+
+        if (!record) {
+            return res.status(400).json({ success: false, message: 'OTP expired or not requested.' });
+        }
+
+        if (Date.now() > record.expiresAt) {
+            otpStore.delete(cleanEmail);
+            return res.status(400).json({ success: false, message: 'OTP has expired.' });
+        }
+
+        if (record.otp !== otp.trim()) {
+            return res.status(400).json({ success: false, message: 'Invalid OTP entered. Please try again.' });
+        }
+
+        // We DO NOT delete the OTP here yet, because we need it to verify the actual password reset.
+        return res.json({ success: true, message: 'OTP verified successfully!' });
+    } catch (error) {
+        console.error('Verify Reset OTP Error:', error);
+        return res.status(500).json({ success: false, message: 'Verification failed.' });
+    }
+});
+
 router.post('/reset-password', async (req, res) => {
     const { identifier, otp, newPassword, role } = req.body;
     const cleanEmail = identifier ? identifier.trim().toLowerCase() : "";
@@ -909,7 +945,7 @@ router.post('/reset-password', async (req, res) => {
         } else {
             result = await pool.query(
                 "UPDATE candidates SET password = $1 WHERE LOWER(TRIM(email)) = $2 RETURNING unique_id",
-                [newPassword, cleanEmail]
+                [hashed, cleanEmail] // Storing hashed password for candidates as well for top security!
             );
         }
 
