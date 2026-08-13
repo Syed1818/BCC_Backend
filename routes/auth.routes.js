@@ -231,6 +231,46 @@ router.post('/candidate/register', async (req, res) => {
 
 
 // =====================================================================
+// --- GST VERIFICATION (EXTERNAL API) ---
+// =====================================================================
+router.get('/employer/verify-gst/:gstin', async (req, res) => {
+    const { gstin } = req.params;
+    
+    // Quick validation: Indian GSTINs are always exactly 15 characters
+    if (!gstin || gstin.length !== 15) {
+        return res.status(400).json({ success: false, message: "Invalid GSTIN format. Must be 15 characters." });
+    }
+
+    try {
+        // Call the gstverify.co.in API using our secret key
+        const response = await fetch(`https://api.gstverify.co.in/v1/verify?gstin=${gstin}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${process.env.GST_VERIFY_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        // If the GST is valid and data is returned
+        if (response.ok && data) {
+            return res.json({ 
+                success: true, 
+                message: "GST Verified Successfully",
+                data: data // Sending the full company details back to the frontend for auto-fill
+            });
+        } else {
+            return res.status(400).json({ success: false, message: "GST verification failed. Please check the number." });
+        }
+    } catch (error) {
+        console.error("GST API Verification Error:", error);
+        return res.status(500).json({ success: false, message: "Server error during live GST verification." });
+    }
+});
+
+
+// =====================================================================
 // --- EMPLOYER REGISTRATION (NEW ENTERPRISE ONBOARDING) ---
 // =====================================================================
 
