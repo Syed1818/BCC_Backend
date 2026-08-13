@@ -135,7 +135,6 @@ router.post('/verify-otp', (req, res) => {
     }
 });
 
-
 // =====================================================================
 // --- CANDIDATE REGISTRATION ---
 // =====================================================================
@@ -226,6 +225,61 @@ router.post('/candidate/register', async (req, res) => {
 
     } catch (error) {
         res.status(500).json({ success: false, message: "Server error during registration." });
+    }
+});
+
+
+// =====================================================================
+// --- GST VERIFICATION API (SECURE BACKEND PROXY) ---
+// =====================================================================
+// We keep the API key here so the frontend never sees it
+const GST_API_KEY = "gstv_2398b5affde7c36272a7798baa0c6f86a6ec2833841d8115";
+
+// 1. Fetch Captcha from GSTVerify
+router.get('/employer/gst-captcha', async (req, res) => {
+    try {
+        const response = await fetch('https://api.gstverify.co.in/v1/captcha', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${GST_API_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        const data = await response.json();
+        return res.json(data);
+    } catch (error) {
+        console.error("GST Captcha Fetch Error:", error);
+        return res.status(500).json({ success: false, message: "Failed to load GST Captcha" });
+    }
+});
+
+// 2. Verify GST number using the solved Captcha
+router.post('/employer/gst-verify', async (req, res) => {
+    const { gst_number, captcha_text, captcha_id } = req.body;
+    
+    if (!gst_number) {
+        return res.status(400).json({ success: false, message: "GST Number is required." });
+    }
+
+    try {
+        const response = await fetch('https://api.gstverify.co.in/v1/verify', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${GST_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                gstin: gst_number,
+                captcha: captcha_text,
+                captcha_id: captcha_id
+            })
+        });
+        
+        const data = await response.json();
+        return res.json(data);
+    } catch (error) {
+        console.error("GST Verify Error:", error);
+        return res.status(500).json({ success: false, message: "Failed to verify GST number. Please try again." });
     }
 });
 
