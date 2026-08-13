@@ -233,15 +233,15 @@ router.post('/candidate/register', async (req, res) => {
 // =====================================================================
 const axios = require('axios');
 
-// We keep the API key here so the frontend never sees it
+const GST_API_BASE = "https://api.gstverify.dubey.app";
 const GST_API_KEY = "gstv_2398b5affde7c36272a7798baa0c6f86a6ec2833841d8115";
 
 // 1. Fetch Captcha from GSTVerify
 router.get('/employer/gst-captcha', async (req, res) => {
     try {
-        const response = await axios.get('https://api.gstverify.co.in/v1/captcha', {
+        const response = await axios.get(`${GST_API_BASE}/api/v1/gst/captcha`, {
             headers: {
-                'Authorization': `Bearer ${GST_API_KEY}`,
+                'X-API-Key': GST_API_KEY,
                 'Content-Type': 'application/json'
             }
         });
@@ -252,7 +252,7 @@ router.get('/employer/gst-captcha', async (req, res) => {
     }
 });
 
-// 2. Verify GST number using the solved Captcha
+// 2. Verify GST number using session ID and solved Captcha
 router.post('/employer/gst-verify', async (req, res) => {
     const { gst_number, captcha_text, captcha_id } = req.body;
     
@@ -261,13 +261,14 @@ router.post('/employer/gst-verify', async (req, res) => {
     }
 
     try {
-        const response = await axios.post('https://api.gstverify.co.in/v1/verify', {
-            gstin: gst_number,
+        const response = await axios.post(`${GST_API_BASE}/api/v1/gst/details`, {
+            sessionId: captcha_id,
+            GSTIN: gst_number.trim().toUpperCase(),
             captcha: captcha_text,
-            captcha_id: captcha_id
+            full: true
         }, {
             headers: {
-                'Authorization': `Bearer ${GST_API_KEY}`,
+                'X-API-Key': GST_API_KEY,
                 'Content-Type': 'application/json'
             }
         });
@@ -275,9 +276,10 @@ router.post('/employer/gst-verify', async (req, res) => {
         return res.json(response.data);
     } catch (error) {
         console.error("GST Verify Error:", error.response ? error.response.data : error.message);
-        return res.status(500).json({ success: false, message: "Failed to verify GST number. Please try again." });
+        return res.status(500).json({ success: false, message: error.response?.data?.message || "Failed to verify GST number." });
     }
 });
+
 
 // =====================================================================
 // --- EMPLOYER REGISTRATION (NEW ENTERPRISE ONBOARDING) ---
