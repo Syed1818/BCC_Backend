@@ -50,8 +50,9 @@ router.get('/:employerId/dashboard', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
+        // FIXED: Added unique_id check for BCC-UMP-EMP formatting
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) {
                 dbEmpId = lookup.rows[0].id;
             } else {
@@ -159,8 +160,9 @@ router.get('/:employerId/analytics', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        // FIXED: Added unique_id check for BCC-UMP-EMP formatting
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
@@ -184,16 +186,23 @@ router.get('/:employerId/analytics', async (req, res) => {
             ORDER BY ja.applied_at DESC
         `, [dbEmpId]);
 
+        // FIXED: 10-Year Safe Rolling Months Query
+        // Uses generate_series to always produce the last 6 months (e.g. Aug, Jul, Jun) regardless of the year, even if there are 0 applications!
         const monthlyRes = await pool.query(`
+            WITH last_6_months AS (
+                SELECT to_char(DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month' * i), 'Mon') as month,
+                       DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month' * i) as month_date
+                FROM generate_series(5, 0, -1) i
+            )
             SELECT 
-                to_char(DATE_TRUNC('month', applied_at), 'Mon') as month,
-                COUNT(*) as apps,
-                SUM(CASE WHEN TRIM(LOWER(status)) IN ('hired', 'offered', 'offer') THEN 1 ELSE 0 END) as hires
-            FROM job_applications 
-            WHERE employer_id = $1
-            GROUP BY DATE_TRUNC('month', applied_at)
-            ORDER BY DATE_TRUNC('month', applied_at) ASC
-            LIMIT 6
+                m.month,
+                COUNT(ja.id) as apps,
+                SUM(CASE WHEN TRIM(LOWER(ja.status)) IN ('hired', 'offered', 'offer') THEN 1 ELSE 0 END) as hires
+            FROM last_6_months m
+            LEFT JOIN job_applications ja 
+                ON DATE_TRUNC('month', ja.applied_at) = m.month_date AND ja.employer_id = $1
+            GROUP BY m.month, m.month_date
+            ORDER BY m.month_date ASC;
         `, [dbEmpId]);
 
         const poolSize = historyRes.rows.length;
@@ -209,7 +218,7 @@ router.get('/:employerId/analytics', async (req, res) => {
                     totalHires: hiredCount,
                     talentPool: poolSize
                 },
-                monthlyData: monthlyRes.rows.length > 0 ? monthlyRes.rows : [{ month: 'Current', apps: 0, hires: 0 }],
+                monthlyData: monthlyRes.rows,
                 history: historyRes.rows
             }
         });
@@ -224,8 +233,8 @@ router.get('/profile/:employerId', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1) OR LOWER(company_name) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer profile not found." });
         }
@@ -245,8 +254,8 @@ router.put('/profile/:employerId/photo', async (req, res) => {
     const { photoUrl } = req.body;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
         }
 
@@ -264,8 +273,8 @@ router.put('/profile/:employerId/update', upload.fields([{ name: 'compliance_doc
     
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
@@ -326,8 +335,8 @@ router.get('/:employerId/event-stalls', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer event stalls not found." });
         }
@@ -346,8 +355,8 @@ router.post('/event-stalls/apply', async (req, res) => {
 
     try {
         let dbEmpId = employerId;
-        if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)) || employerId.includes('BCC-'))) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer account not found." });
         }
@@ -372,8 +381,8 @@ router.get('/:employerId/jobs-list', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer jobs not found." });
         }
@@ -393,7 +402,7 @@ router.post('/:employerId/jobs', async (req, res) => {
         let dbEmpId = employerId;
         let companyName = "Unknown Company";
         
-        const lookup = await pool.query("SELECT id, company_name FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        const lookup = await pool.query("SELECT id, company_name FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
         if (lookup.rows.length > 0) {
             dbEmpId = lookup.rows[0].id;
             companyName = lookup.rows[0].company_name;
@@ -491,8 +500,8 @@ router.get('/:employerId/hrs', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
@@ -512,8 +521,8 @@ router.post('/:employerId/hrs', async (req, res) => {
 
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
@@ -556,8 +565,8 @@ router.get('/:employerId/job-options', async (req, res) => {
     const { employerId } = req.params;
     try {
         let dbEmpId = employerId;
-        if (employerId.includes('@') || isNaN(employerId)) {
-            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)", [employerId]);
+        if (employerId.includes('@') || isNaN(employerId) || employerId.includes('BCC-')) {
+            const lookup = await pool.query("SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)", [employerId]);
             if (lookup.rows.length > 0) dbEmpId = lookup.rows[0].id;
             else return res.status(404).json({ success: false, message: "Employer not found." });
         }
@@ -739,9 +748,9 @@ router.post('/feedback', async (req, res) => {
     }
 
     let dbEmpId = employerId;
-    if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)))) {
+    if (typeof employerId === 'string' && (employerId.includes('@') || isNaN(Number(employerId)) || employerId.includes('BCC-'))) {
       const lookup = await pool.query(
-        "SELECT id FROM employers WHERE id::text = $1 OR LOWER(email) = LOWER($1)",
+        "SELECT id FROM employers WHERE id::text = $1 OR unique_id = $1 OR LOWER(email) = LOWER($1)",
         [employerId]
       );
       if (lookup.rows.length > 0) {
